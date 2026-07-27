@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -14,7 +15,10 @@ import {
   type User,
 } from "firebase/auth";
 
-import { auth } from "../lib/firebase";
+import {
+  auth,
+  ensureAuthPersistence,
+} from "../lib/firebase";
 import {
   getUserRole,
   type UserRole,
@@ -28,7 +32,8 @@ type AuthContextType = {
   isAuthenticated: boolean;
   isAdmin: boolean;
   refreshRole: (
-    currentUserOverride?: User | null
+    currentUserOverride?: User | null,
+    forceRefresh?: boolean
   ) => Promise<UserRole>;
 };
 
@@ -55,93 +60,178 @@ export function AuthProvider({
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<UserRole>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(
-    null
-  );
+  const [error, setError] = useState<string | null>(null);
 
-  const loadRole = useCallback(
-    async (currentUser: User): Promise<UserRole> => {
-      try {
-        setError(null);
+  // Every auth/token event receives a sequence number. An older async
+  // role lookup is not allowed to overwrite a newer successful lookup.
+  const authSequenceRef = useRef(0);
+  const userRef = useRef<User | null>(null);
 
-        const resolvedRole = await getUserRole(
-          currentUser.uid
-        );
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
-        if (isValidRole(resolvedRole)) {
-          setRole(resolvedRole);
-          return resolvedRole;
-        }
+  const resolveRole = useCallback(
+    async (
+      currentUser: User,
+      forceRefresh = false
+    ): Promise<UserRole> => {
+      const resolvedRole = await getUserRole(
+        currentUser.uid,
+        forceRefresh
+      );
 
-        setRole(null);
-        return null;
-      } catch (roleError) {
-        console.error(
-          "Role loading error:",
-          roleError
-        );
-        setError("Unable to verify user permission.");
-        setRole(null);
-        return null;
-      }
+      return isValidRole(resolvedRole)
+        ? resolvedRole
+        : null;
     },
     []
   );
 
   const refreshRole = useCallback(
     async (
-      currentUserOverride?: User | null
+      currentUserOverride?: User | null,
+      forceRefresh = true
     ): Promise<UserRole> => {
       const targetUser =
-        currentUserOverride ?? user;
+        currentUserOverride ?? userRef.current;
 
       if (!targetUser) {
         setRole(null);
         return null;
       }
 
-      return loadRole(targetUser);
+      const requestSequence = ++authSequenceRef.current;
+
+      try {
+        setLoading(true);
+        setError(null);
+
+        const resolvedRole = await resolveRole(
+          targetUser,
+          forceRefresh
+        );
+
+        if (requestSequence === authSequenceRef.current) {
+          setUser(targetUser);
+          setRole(resolvedRole);
+        }
+
+        return resolvedRole;
+      } catch (roleError) {
+        console.error("Role refresh failed:", roleError);
+
+        if (requestSequence === authSequenceRef.current) {
+          setRole(null);
+          setError("Unable to verify the account permission.");
+        }
+
+        return null;
+      } finally {
+        if (requestSequence === authSequenceRef.current) {
+          setLoading(false);
+        }
+      }
     },
-    [user, loadRole]
+    [resolveRole]
   );
 
   useEffect(() => {
     let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
 
-    /*
-     * onIdTokenChanged also reacts when custom claims are
-     * refreshed, which is useful after server authorization.
-     */
-    const unsubscribe = onIdTokenChanged(
-      auth,
-      async (currentUser) => {
+    async function initializeAuthentication() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        await ensureAuthPersistence();
+
         if (!isMounted) {
           return;
         }
 
-        setLoading(true);
-        setError(null);
-        setUser(currentUser);
+        unsubscribe = onIdTokenChanged(
+          auth,
+          async (currentUser) => {
+            const requestSequence =
+              ++authSequenceRef.current;
 
-        if (!currentUser) {
-          setRole(null);
-          setLoading(false);
-          return;
-        }
+            if (!isMounted) {
+              return;
+            }
 
-        await loadRole(currentUser);
+            setLoading(true);
+            setError(null);
+            setUser(currentUser);
+            userRef.current = currentUser;
+
+            if (!currentUser) {
+              setRole(null);
+              setLoading(false);
+              return;
+            }
+
+            try {
+              const resolvedRole = await resolveRole(
+                currentUser,
+                false
+              );
+
+              if (
+                isMounted &&
+                requestSequence === authSequenceRef.current
+              ) {
+                setRole(resolvedRole);
+              }
+            } catch (roleError) {
+              console.error("Role loading error:", roleError);
+
+              if (
+                isMounted &&
+                requestSequence === authSequenceRef.current
+              ) {
+                setRole(null);
+                setError(
+                  "Unable to verify the account permission."
+                );
+              }
+            } finally {
+              if (
+                isMounted &&
+                requestSequence === authSequenceRef.current
+              ) {
+                setLoading(false);
+              }
+            }
+          }
+        );
+      } catch (persistenceError) {
+        console.error(
+          "Firebase auth persistence failed:",
+          persistenceError
+        );
 
         if (isMounted) {
+          setUser(null);
+          userRef.current = null;
+          setRole(null);
+          setError(
+            "The browser could not save the login session. Enable site storage or try a normal browser window."
+          );
           setLoading(false);
         }
       }
-    );
+    }
+
+    void initializeAuthentication();
 
     return () => {
       isMounted = false;
-      unsubscribe();
+      authSequenceRef.current += 1;
+      unsubscribe?.();
     };
-  }, [loadRole]);
+  }, [resolveRole]);
 
   const value = useMemo<AuthContextType>(
     () => ({
@@ -153,13 +243,7 @@ export function AuthProvider({
       isAdmin: role === "admin",
       refreshRole,
     }),
-    [
-      user,
-      role,
-      loading,
-      error,
-      refreshRole,
-    ]
+    [user, role, loading, error, refreshRole]
   );
 
   return (

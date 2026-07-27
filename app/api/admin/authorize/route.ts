@@ -11,6 +11,7 @@ import {
 import {
   getAdminAuth,
   getAdminDatabase,
+  getFirebaseAdminConfigurationStatus,
 } from "../../../lib/firebase-admin";
 
 export const runtime = "nodejs";
@@ -69,6 +70,116 @@ function isBlockedProfile(
   );
 }
 
+
+function getConfigurationError(): {
+  message: string;
+  errorCode: string;
+} | null {
+  const status = getFirebaseAdminConfigurationStatus();
+
+  if (!status.projectId) {
+    return {
+      message:
+        "Vercel is missing FIREBASE_ADMIN_PROJECT_ID. Add it in Project Settings > Environment Variables, then redeploy.",
+      errorCode: "missing-admin-project-id",
+    };
+  }
+
+  if (!status.databaseURL) {
+    return {
+      message:
+        "Vercel is missing FIREBASE_ADMIN_DATABASE_URL. Add it in Project Settings > Environment Variables, then redeploy.",
+      errorCode: "missing-admin-database-url",
+    };
+  }
+
+  if (!status.clientEmail) {
+    return {
+      message:
+        "Vercel is missing FIREBASE_ADMIN_CLIENT_EMAIL. Add it in Project Settings > Environment Variables, then redeploy.",
+      errorCode: "missing-admin-client-email",
+    };
+  }
+
+  if (!status.privateKey) {
+    return {
+      message:
+        "Vercel is missing FIREBASE_ADMIN_PRIVATE_KEY. Add the complete service-account private key, then redeploy.",
+      errorCode: "missing-admin-private-key",
+    };
+  }
+
+  if (!status.privateKeyFormat) {
+    return {
+      message:
+        "FIREBASE_ADMIN_PRIVATE_KEY has an invalid format. It must include BEGIN PRIVATE KEY and END PRIVATE KEY, with \n line breaks preserved.",
+      errorCode: "invalid-admin-private-key-format",
+    };
+  }
+
+  return null;
+}
+
+function getPublicFirebaseError(
+  code: string,
+  message: string
+) {
+  const normalized = `${code} ${message}`.toLowerCase();
+
+  if (
+    normalized.includes("failed to parse private key") ||
+    normalized.includes("invalid pem") ||
+    normalized.includes("private key")
+  ) {
+    return {
+      message:
+        "FIREBASE_ADMIN_PRIVATE_KEY could not be parsed on Vercel. Paste the complete key and preserve its \n line breaks, then redeploy.",
+      errorCode: "invalid-admin-private-key",
+    };
+  }
+
+  if (
+    normalized.includes("incorrect audience") ||
+    normalized.includes("audience") ||
+    normalized.includes("project id")
+  ) {
+    return {
+      message:
+        "The Firebase browser project and Firebase Admin project do not match. Verify that both project IDs are isda-go, then redeploy.",
+      errorCode: "firebase-project-mismatch",
+    };
+  }
+
+  if (
+    normalized.includes("permission_denied") ||
+    normalized.includes("permission denied")
+  ) {
+    return {
+      message:
+        "Firebase Admin connected, but access to Realtime Database was denied. Verify the service account and database URL.",
+      errorCode: "admin-database-permission-denied",
+    };
+  }
+
+  if (
+    normalized.includes("invalid credential") ||
+    normalized.includes("invalid-credential") ||
+    normalized.includes("credential")
+  ) {
+    return {
+      message:
+        "The Firebase Admin service-account credentials configured in Vercel are invalid. Replace the client email and private key, then redeploy.",
+      errorCode: "invalid-admin-credential",
+    };
+  }
+
+  return {
+    message:
+      "Firebase Admin verification failed on Vercel. Check the server environment variables and deployment logs.",
+    errorCode: code || "firebase-admin-verification-failed",
+  };
+}
+
 function readBearerToken(
   request: NextRequest
 ): string | null {
@@ -124,12 +235,25 @@ export async function POST(
   request: NextRequest
 ) {
   try {
+    const configurationError = getConfigurationError();
+
+    if (configurationError) {
+      return jsonResponse(
+        {
+          authorized: false,
+          ...configurationError,
+        },
+        500
+      );
+    }
+
     if (!hasConfiguredAdminEmails()) {
       return jsonResponse(
         {
           authorized: false,
           message:
-            "FIREBASE_ADMIN_EMAILS is missing or empty.",
+            "Vercel is missing FIREBASE_ADMIN_EMAILS. Add the exact Firebase Authentication admin email, then redeploy.",
+          errorCode: "missing-admin-email-allowlist",
         },
         500
       );
@@ -282,24 +406,15 @@ export async function POST(
       details.message
     );
 
-    /*
-     * Development receives a useful diagnostic.
-     * Production keeps private configuration details hidden.
-     */
-    const isDevelopment =
-      process.env.NODE_ENV !== "production";
+    const publicError = getPublicFirebaseError(
+      details.code,
+      details.message
+    );
 
     return jsonResponse(
       {
         authorized: false,
-        message: isDevelopment
-          ? `Admin verification failed: ${details.code} — ${details.message}`
-          : "Admin verification failed. Check the Firebase Admin server configuration.",
-        ...(isDevelopment
-          ? {
-              errorCode: details.code,
-            }
-          : {}),
+        ...publicError,
       },
       500
     );

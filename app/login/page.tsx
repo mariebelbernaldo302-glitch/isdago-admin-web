@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { FirebaseError } from "firebase/app";
 import {
   signInWithEmailAndPassword,
@@ -18,13 +18,24 @@ import { useRouter } from "next/navigation";
 
 import IsdaGoLogo from "../components/IsdaGoLogo";
 import { createActivityLog } from "../lib/activity";
-import { auth } from "../lib/firebase";
+import { auth, ensureAuthPersistence } from "../lib/firebase";
 import { useAuth } from "../providers/AuthProvider";
 
 type AdminAuthorizationResponse = {
   authorized?: boolean;
   message?: string;
+  errorCode?: string;
 };
+
+class AdminAuthorizationError extends Error {
+  code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "AdminAuthorizationError";
+    this.code = code;
+  }
+}
 
 function getLoginErrorMessage(error: unknown) {
   if (error instanceof FirebaseError) {
@@ -73,9 +84,10 @@ async function authorizeAdmin(idToken: string) {
     .catch(() => null)) as AdminAuthorizationResponse | null;
 
   if (!response.ok || payload?.authorized !== true) {
-    throw new Error(
+    throw new AdminAuthorizationError(
       payload?.message ||
-        "This account is not authorized to access the admin portal."
+        "This account is not authorized to access the admin portal.",
+      payload?.errorCode
     );
   }
 }
@@ -96,6 +108,12 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Prevent the existing-session redirect from firing in the middle
+  // of a new login transaction. Without this guard, an old admin claim
+  // can open the dashboard before the Vercel API check finishes. If that
+  // API call then fails, the catch block signs out and the dashboard flashes.
+  const loginAttemptInProgressRef = useRef(false);
+
   const canSubmit = useMemo(() => {
     return (
       email.trim().length > 0 &&
@@ -105,10 +123,16 @@ export default function LoginPage() {
   }, [email, password, loading]);
 
   useEffect(() => {
-    if (!authLoading && user && role === "admin") {
+    if (
+      !loginAttemptInProgressRef.current &&
+      !loading &&
+      !authLoading &&
+      user &&
+      role === "admin"
+    ) {
       router.replace("/dashboard");
     }
-  }, [authLoading, user, role, router]);
+  }, [authLoading, loading, user, role, router]);
 
   async function handleLogin(
     event: FormEvent<HTMLFormElement>
@@ -122,9 +146,16 @@ export default function LoginPage() {
       return;
     }
 
+    let loginSucceeded = false;
+
     try {
+      loginAttemptInProgressRef.current = true;
       setLoading(true);
       setError("");
+
+      // Explicit local persistence prevents the session from being lost
+      // during a route change or browser refresh.
+      await ensureAuthPersistence();
 
       /*
        * Step 1: Firebase Authentication verifies the email
@@ -145,7 +176,6 @@ export default function LoginPage() {
        * and creates/repairs users/{uid} in Realtime Database.
        */
       const idToken = await credential.user.getIdToken();
-
       await authorizeAdmin(idToken);
 
       /*
@@ -155,19 +185,18 @@ export default function LoginPage() {
       await credential.user.getIdToken(true);
 
       /*
-       * Step 4: Refresh the AuthProvider role after the server
-       * has written role=admin to users/{uid}.
+       * Step 4: Read the already-refreshed claim into the provider.
        */
       const resolvedRole = await refreshRole(
-        credential.user
+        credential.user,
+        false
       );
 
       if (resolvedRole !== "admin") {
-        await signOut(auth);
-        setError(
-          "Admin authorization was created, but the dashboard role could not be refreshed. Please sign in again."
+        throw new AdminAuthorizationError(
+          "Admin access was approved, but the refreshed Firebase token does not contain the admin role. Sign in again after this deployment finishes.",
+          "admin-claim-not-refreshed"
         );
-        return;
       }
 
       try {
@@ -185,6 +214,7 @@ export default function LoginPage() {
         );
       }
 
+      loginSucceeded = true;
       router.replace("/dashboard");
       router.refresh();
     } catch (loginError) {
@@ -196,6 +226,10 @@ export default function LoginPage() {
 
       setError(getLoginErrorMessage(loginError));
     } finally {
+      if (!loginSucceeded) {
+        loginAttemptInProgressRef.current = false;
+      }
+
       setLoading(false);
     }
   }

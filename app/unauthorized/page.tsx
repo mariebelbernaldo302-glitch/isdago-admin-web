@@ -29,8 +29,8 @@ export default function UnauthorizedPage() {
         </div>
 
         <div className="notice">
-          Admin access is restricted based on the user role saved in Firebase
-          Realtime Database.
+          Admin access is restricted by the verified Firebase Authentication role
+          and the server-side administrator allowlist.
         </div>
       </section>
     </main>
