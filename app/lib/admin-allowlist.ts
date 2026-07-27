@@ -1,7 +1,11 @@
 import "server-only";
 
 function normalizeEmail(email: string) {
-  return email.trim().toLowerCase();
+  return email
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .trim()
+    .toLowerCase();
 }
 
 const configuredEmails =

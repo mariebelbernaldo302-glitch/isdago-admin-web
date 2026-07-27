@@ -1,3 +1,5 @@
+"use client";
+
 import {
   getIdTokenResult,
   type IdTokenResult,
@@ -20,7 +22,8 @@ export type UserPermissionProfile = {
 };
 
 const ADMIN_TEST_MODE =
-  process.env.NEXT_PUBLIC_ADMIN_TEST_MODE === "true" &&
+  process.env.NEXT_PUBLIC_ADMIN_TEST_MODE ===
+    "true" &&
   process.env.NODE_ENV !== "production";
 
 const VALID_ROLES = [
@@ -29,7 +32,8 @@ const VALID_ROLES = [
   "customer",
 ] as const;
 
-type ValidRole = (typeof VALID_ROLES)[number];
+type ValidRole =
+  (typeof VALID_ROLES)[number];
 
 export function isAdminTestMode() {
   return ADMIN_TEST_MODE;
@@ -55,39 +59,28 @@ export function validateRole(
 function getRoleFromClaims(
   tokenResult: IdTokenResult
 ): UserRole {
-  const claims = tokenResult.claims;
-
-  /*
-   * The secure /api/admin/authorize route sets:
-   *
-   * admin: true
-   * role: "admin"
-   */
-  if (claims.admin === true) {
+  if (tokenResult.claims.admin === true) {
     return "admin";
   }
 
-  return validateRole(claims.role);
+  return validateRole(
+    tokenResult.claims.role
+  );
 }
 
-async function getCurrentUserRole(
-  currentUser: User,
+export async function getRoleForUser(
+  user: User,
   forceRefresh = false
 ): Promise<UserRole> {
-  const tokenResult = await getIdTokenResult(
-    currentUser,
-    forceRefresh
-  );
+  const tokenResult =
+    await getIdTokenResult(
+      user,
+      forceRefresh
+    );
 
   return getRoleFromClaims(tokenResult);
 }
 
-/**
- * Reads the authenticated user's role from Firebase
- * Authentication custom claims.
- *
- * It does not read users/{uid} from Realtime Database.
- */
 export async function getUserPermissionProfile(
   uid: string,
   forceRefresh = false
@@ -109,10 +102,6 @@ export async function getUserPermissionProfile(
 
   const currentUser = auth.currentUser;
 
-  /*
-   * Do not use one signed-in user's token
-   * to resolve another user's role.
-   */
   if (
     !currentUser ||
     currentUser.uid !== normalizedUid
@@ -121,7 +110,7 @@ export async function getUserPermissionProfile(
   }
 
   try {
-    const role = await getCurrentUserRole(
+    const role = await getRoleForUser(
       currentUser,
       forceRefresh
     );
@@ -129,14 +118,12 @@ export async function getUserPermissionProfile(
     return {
       uid: currentUser.uid,
       role,
-      status: role ? "active" : "unauthorized",
+      status: role
+        ? "active"
+        : "unauthorized",
       isActive: Boolean(role),
     };
   } catch {
-    /*
-     * Do not use console.error for an expected
-     * authorization-state failure.
-     */
     return null;
   }
 }
@@ -154,23 +141,12 @@ export async function getUserRole(
   return profile?.role ?? null;
 }
 
-export async function refreshCurrentUserRole():
-Promise<UserRole> {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    return null;
-  }
-
-  return getUserRole(
-    currentUser.uid,
-    true
-  );
-}
-
 export async function hasRole(
   uid: string,
-  requiredRole: Exclude<UserRole, null>
+  requiredRole: Exclude<
+    UserRole,
+    null
+  >
 ) {
   const role = await getUserRole(uid);
   return role === requiredRole;
@@ -190,14 +166,20 @@ export async function hasAnyRole(
     : false;
 }
 
-export async function isAdmin(uid: string) {
+export async function isAdmin(
+  uid: string
+) {
   return hasRole(uid, "admin");
 }
 
-export async function isVendor(uid: string) {
+export async function isVendor(
+  uid: string
+) {
   return hasRole(uid, "vendor");
 }
 
-export async function isCustomer(uid: string) {
+export async function isCustomer(
+  uid: string
+) {
   return hasRole(uid, "customer");
 }

@@ -1,75 +1,111 @@
 "use client";
 
-import { useEffect } from "react";
+import {
+  useEffect,
+  useMemo,
+} from "react";
+
 import {
   usePathname,
   useRouter,
 } from "next/navigation";
 
-import type { UserRole } from "../lib/permissions";
-import { useAuth } from "../providers/AuthProvider";
-
-type AllowedRole = Exclude<UserRole, null>;
+import {
+  useAuth,
+} from "../providers/AuthProvider";
 
 type AdminGuardProps = {
   children: React.ReactNode;
-  allowedRoles?: readonly AllowedRole[];
+  allowedRoles?: string[];
 };
 
-const DEFAULT_ALLOWED_ROLES: readonly AllowedRole[] = [
+const DEFAULT_ALLOWED_ROLES = [
   "admin",
 ];
 
 export default function AdminGuard({
   children,
-  allowedRoles = DEFAULT_ALLOWED_ROLES,
+  allowedRoles =
+    DEFAULT_ALLOWED_ROLES,
 }: AdminGuardProps) {
   const {
     user,
     role,
     loading,
+    initialized,
     error,
   } = useAuth();
 
   const router = useRouter();
   const pathname = usePathname();
 
-  const isAllowed =
-    Boolean(role) &&
-    allowedRoles.includes(role as AllowedRole);
+  const accessAllowed = useMemo(
+    () =>
+      Boolean(
+        user &&
+        role &&
+        allowedRoles.includes(role)
+      ),
+    [
+      user,
+      role,
+      allowedRoles,
+    ]
+  );
 
   useEffect(() => {
-    // Never redirect while Firebase is restoring persistence or
-    // refreshing an ID token/custom claim.
-    if (loading || error) {
+    if (
+      !initialized ||
+      loading
+    ) {
       return;
     }
 
     if (!user) {
-      if (pathname !== "/login") {
-        router.replace("/login");
+      if (
+        pathname !== "/login"
+      ) {
+        router.replace(
+          "/login"
+        );
       }
+
       return;
     }
 
-    if (!isAllowed && pathname !== "/unauthorized") {
-      router.replace("/unauthorized");
+    if (!accessAllowed) {
+      if (
+        pathname !== "/unauthorized"
+      ) {
+        router.replace(
+          "/unauthorized"
+        );
+      }
     }
   }, [
-    user,
+    initialized,
     loading,
-    error,
-    isAllowed,
+    user,
+    accessAllowed,
     pathname,
     router,
   ]);
 
-  if (loading) {
+  if (
+    !initialized ||
+    loading
+  ) {
     return (
       <div className="auth-loading">
         <div className="loader" />
-        <h3>Checking account permission...</h3>
-        <p>IsdaGo Admin</p>
+
+        <h3>
+          Restoring your admin session...
+        </h3>
+
+        <p>
+          IsdaGo Admin
+        </p>
       </div>
     );
   }
@@ -77,13 +113,26 @@ export default function AdminGuard({
   if (error) {
     return (
       <div className="auth-error">
-        <h3>Authentication Error</h3>
+        <h3>
+          Authentication Error
+        </h3>
+
         <p>{error}</p>
+
+        <button
+          className="btn btn-primary"
+          type="button"
+          onClick={() =>
+            window.location.reload()
+          }
+        >
+          Retry
+        </button>
       </div>
     );
   }
 
-  if (!user || !isAllowed) {
+  if (!accessAllowed) {
     return null;
   }
 

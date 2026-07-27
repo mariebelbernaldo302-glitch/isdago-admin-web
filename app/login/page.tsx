@@ -1,11 +1,21 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { FirebaseError } from "firebase/app";
+import {
+  FormEvent,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
+import {
+  FirebaseError,
+} from "firebase/app";
+
 import {
   signInWithEmailAndPassword,
   signOut,
 } from "firebase/auth";
+
 import {
   Eye,
   EyeOff,
@@ -14,31 +24,33 @@ import {
   Mail,
   ShieldCheck,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
 
-import IsdaGoLogo from "../components/IsdaGoLogo";
-import { createActivityLog } from "../lib/activity";
-import { auth, ensureAuthPersistence } from "../lib/firebase";
-import { useAuth } from "../providers/AuthProvider";
+import {
+  useRouter,
+} from "next/navigation";
 
-type AdminAuthorizationResponse = {
-  authorized?: boolean;
-  message?: string;
-  errorCode?: string;
-};
+import IsdaGoLogo
+  from "../components/IsdaGoLogo";
 
-class AdminAuthorizationError extends Error {
-  code?: string;
+import {
+  createActivityLog,
+} from "../lib/activity";
 
-  constructor(message: string, code?: string) {
-    super(message);
-    this.name = "AdminAuthorizationError";
-    this.code = code;
-  }
-}
+import {
+  auth,
+  ensureAuthPersistence,
+} from "../lib/firebase";
 
-function getLoginErrorMessage(error: unknown) {
-  if (error instanceof FirebaseError) {
+import {
+  useAuth,
+} from "../providers/AuthProvider";
+
+function getLoginErrorMessage(
+  error: unknown
+) {
+  if (
+    error instanceof FirebaseError
+  ) {
     switch (error.code) {
       case "auth/invalid-email":
         return "Please enter a valid email address.";
@@ -62,150 +74,145 @@ function getLoginErrorMessage(error: unknown) {
     }
   }
 
-  if (error instanceof Error && error.message.trim()) {
+  if (
+    error instanceof Error &&
+    error.message.trim()
+  ) {
     return error.message;
   }
 
   return "Unable to sign in. Please try again.";
 }
 
-async function authorizeAdmin(idToken: string) {
-  const response = await fetch("/api/admin/authorize", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${idToken}`,
-      "Content-Type": "application/json",
-    },
-    cache: "no-store",
-  });
-
-  const payload = (await response
-    .json()
-    .catch(() => null)) as AdminAuthorizationResponse | null;
-
-  if (!response.ok || payload?.authorized !== true) {
-    throw new AdminAuthorizationError(
-      payload?.message ||
-        "This account is not authorized to access the admin portal.",
-      payload?.errorCode
-    );
-  }
-}
-
 export default function LoginPage() {
   const router = useRouter();
+
   const {
     user,
     role,
     loading: authLoading,
+    initialized,
     refreshRole,
   } = useAuth();
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] =
+    useState("");
 
-  const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [password, setPassword] =
+    useState("");
 
-  // Prevent the existing-session redirect from firing in the middle
-  // of a new login transaction. Without this guard, an old admin claim
-  // can open the dashboard before the Vercel API check finishes. If that
-  // API call then fails, the catch block signs out and the dashboard flashes.
-  const loginAttemptInProgressRef = useRef(false);
+  const [
+    showPassword,
+    setShowPassword,
+  ] = useState(false);
 
-  const canSubmit = useMemo(() => {
-    return (
+  const [error, setError] =
+    useState("");
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const canSubmit = useMemo(
+    () =>
       email.trim().length > 0 &&
-      password.trim().length > 0 &&
-      !loading
-    );
-  }, [email, password, loading]);
+      password.length > 0 &&
+      !loading &&
+      initialized,
+    [
+      email,
+      password,
+      loading,
+      initialized,
+    ]
+  );
 
   useEffect(() => {
     if (
-      !loginAttemptInProgressRef.current &&
-      !loading &&
+      initialized &&
       !authLoading &&
       user &&
       role === "admin"
     ) {
-      router.replace("/dashboard");
+      router.replace(
+        "/dashboard"
+      );
     }
-  }, [authLoading, loading, user, role, router]);
+  }, [
+    initialized,
+    authLoading,
+    user,
+    role,
+    router,
+  ]);
 
   async function handleLogin(
     event: FormEvent<HTMLFormElement>
   ) {
     event.preventDefault();
 
-    const emailValue = email.trim().toLowerCase();
+    const emailValue =
+      email.trim().toLowerCase();
 
-    if (!emailValue || !password) {
-      setError("Please enter your admin email and password.");
+    if (
+      !emailValue ||
+      !password
+    ) {
+      setError(
+        "Please enter your admin email and password."
+      );
       return;
     }
 
-    let loginSucceeded = false;
-
     try {
-      loginAttemptInProgressRef.current = true;
       setLoading(true);
       setError("");
 
-      // Explicit local persistence prevents the session from being lost
-      // during a route change or browser refresh.
+      /*
+       * Set local persistence before signing in so the
+       * Vercel-hosted session survives navigation and refresh.
+       */
       await ensureAuthPersistence();
 
-      /*
-       * Step 1: Firebase Authentication verifies the email
-       * and password through the browser SDK.
-       */
-      const credential = await signInWithEmailAndPassword(
-        auth,
-        emailValue,
-        password
-      );
-
-      /*
-       * Step 2: Send the signed-in user's Firebase ID token
-       * to a server-only API route.
-       *
-       * The API route verifies the token with Firebase Admin,
-       * checks FIREBASE_ADMIN_EMAILS, adds the admin claim,
-       * and creates/repairs users/{uid} in Realtime Database.
-       */
-      const idToken = await credential.user.getIdToken();
-      await authorizeAdmin(idToken);
-
-      /*
-       * Step 3: Refresh the token so the new custom claims
-       * are available immediately.
-       */
-      await credential.user.getIdToken(true);
-
-      /*
-       * Step 4: Read the already-refreshed claim into the provider.
-       */
-      const resolvedRole = await refreshRole(
-        credential.user,
-        false
-      );
-
-      if (resolvedRole !== "admin") {
-        throw new AdminAuthorizationError(
-          "Admin access was approved, but the refreshed Firebase token does not contain the admin role. Sign in again after this deployment finishes.",
-          "admin-claim-not-refreshed"
+      const credential =
+        await signInWithEmailAndPassword(
+          auth,
+          emailValue,
+          password
         );
+
+      /*
+       * Server-verifies the allowlisted admin, creates the
+       * database profile, adds custom claims, and refreshes
+       * the client's role.
+       */
+      const resolvedRole =
+        await refreshRole(
+          credential.user,
+          true
+        );
+
+      if (
+        resolvedRole !== "admin"
+      ) {
+        await signOut(auth);
+
+        setError(
+          "This account is not authorized to access the admin portal."
+        );
+
+        return;
       }
 
       try {
         await createActivityLog({
           type: "Admin Login",
-          description: `Admin signed in: ${
-            credential.user.email ?? emailValue
-          }`,
-          module: "Authentication",
+          description:
+            `Admin signed in: ${
+              credential.user.email ??
+              emailValue
+            }`,
+          module:
+            "Authentication",
         });
       } catch (activityError) {
         console.warn(
@@ -214,41 +221,50 @@ export default function LoginPage() {
         );
       }
 
-      loginSucceeded = true;
-      router.replace("/dashboard");
-      router.refresh();
+      router.replace(
+        "/dashboard"
+      );
     } catch (loginError) {
       try {
         await signOut(auth);
       } catch {
-        // Ignore sign-out cleanup errors.
+        // Ignore cleanup errors.
       }
 
-      setError(getLoginErrorMessage(loginError));
+      setError(
+        getLoginErrorMessage(
+          loginError
+        )
+      );
     } finally {
-      if (!loginSucceeded) {
-        loginAttemptInProgressRef.current = false;
-      }
-
       setLoading(false);
     }
   }
 
   return (
     <main className="login-page">
-      <form className="login-card" onSubmit={handleLogin}>
+      <form
+        className="login-card"
+        onSubmit={handleLogin}
+      >
         <IsdaGoLogo />
 
         <h1>IsdaGo Admin</h1>
 
         <p>
-          Sign in to manage the seafood marketplace, vendors,
-          products, orders, and transactions.
+          Sign in to manage the seafood marketplace,
+          vendors, products, orders, and transactions.
         </p>
 
         {error && (
-          <div className="error-box" role="alert">
-            <strong>Login failed</strong>
+          <div
+            className="error-box"
+            role="alert"
+          >
+            <strong>
+              Login failed
+            </strong>
+
             <p>{error}</p>
           </div>
         )}
@@ -256,7 +272,10 @@ export default function LoginPage() {
         <div className="form-grid">
           <div className="form-group">
             <label htmlFor="admin-email">
-              <Mail size={16} strokeWidth={2.4} />
+              <Mail
+                size={16}
+                strokeWidth={2.4}
+              />
               Email Address
             </label>
 
@@ -267,7 +286,9 @@ export default function LoginPage() {
               placeholder="admin@isdago.com"
               value={email}
               onChange={(event) =>
-                setEmail(event.target.value)
+                setEmail(
+                  event.target.value
+                )
               }
               autoComplete="email"
               disabled={loading}
@@ -277,7 +298,10 @@ export default function LoginPage() {
 
           <div className="form-group">
             <label htmlFor="admin-password">
-              <Lock size={16} strokeWidth={2.4} />
+              <Lock
+                size={16}
+                strokeWidth={2.4}
+              />
               Password
             </label>
 
@@ -285,11 +309,17 @@ export default function LoginPage() {
               <input
                 id="admin-password"
                 className="input"
-                type={showPassword ? "text" : "password"}
+                type={
+                  showPassword
+                    ? "text"
+                    : "password"
+                }
                 placeholder="Enter your password"
                 value={password}
                 onChange={(event) =>
-                  setPassword(event.target.value)
+                  setPassword(
+                    event.target.value
+                  )
                 }
                 autoComplete="current-password"
                 disabled={loading}
@@ -301,7 +331,8 @@ export default function LoginPage() {
                 className="password-toggle"
                 onClick={() =>
                   setShowPassword(
-                    (currentValue) => !currentValue
+                    (currentValue) =>
+                      !currentValue
                   )
                 }
                 aria-label={
@@ -312,9 +343,15 @@ export default function LoginPage() {
                 disabled={loading}
               >
                 {showPassword ? (
-                  <EyeOff size={18} strokeWidth={2.4} />
+                  <EyeOff
+                    size={18}
+                    strokeWidth={2.4}
+                  />
                 ) : (
-                  <Eye size={18} strokeWidth={2.4} />
+                  <Eye
+                    size={18}
+                    strokeWidth={2.4}
+                  />
                 )}
               </button>
             </div>
@@ -326,14 +363,25 @@ export default function LoginPage() {
           className="btn btn-primary"
           disabled={!canSubmit}
         >
-          <LogIn size={18} strokeWidth={2.4} />
-          {loading ? "Verifying admin access..." : "Sign In"}
+          <LogIn
+            size={18}
+            strokeWidth={2.4}
+          />
+
+          {loading
+            ? "Verifying admin access..."
+            : "Sign In"}
         </button>
 
         <div className="notice">
-          <ShieldCheck size={16} strokeWidth={2.4} />
-          Only Firebase accounts listed in the server-side
-          administrator allowlist may access this dashboard.
+          <ShieldCheck
+            size={16}
+            strokeWidth={2.4}
+          />
+
+          Only Firebase accounts listed in the
+          server-side administrator allowlist may
+          access this dashboard.
         </div>
       </form>
     </main>

@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+
 import {
   onIdTokenChanged,
   type User,
@@ -19,8 +20,13 @@ import {
   auth,
   ensureAuthPersistence,
 } from "../lib/firebase";
+
 import {
-  getUserRole,
+  authorizeAdminSession,
+} from "../lib/admin-client";
+
+import {
+  getRoleForUser,
   type UserRole,
 } from "../lib/permissions";
 
@@ -28,12 +34,14 @@ type AuthContextType = {
   user: User | null;
   role: UserRole;
   loading: boolean;
+  initialized: boolean;
   error: string | null;
   isAuthenticated: boolean;
   isAdmin: boolean;
+
   refreshRole: (
     currentUserOverride?: User | null,
-    forceRefresh?: boolean
+    reauthorize?: boolean
   ) => Promise<UserRole>;
 };
 
@@ -42,48 +50,76 @@ type AuthProviderProps = {
 };
 
 const AuthContext =
-  createContext<AuthContextType | undefined>(undefined);
-
-function isValidRole(
-  role: UserRole
-): role is Exclude<UserRole, null> {
-  return (
-    role === "admin" ||
-    role === "vendor" ||
-    role === "customer"
+  createContext<AuthContextType | undefined>(
+    undefined
   );
+
+function getReadableAuthError(
+  error: unknown
+) {
+  if (
+    error instanceof Error &&
+    error.message.trim()
+  ) {
+    return error.message;
+  }
+
+  return "Unable to verify administrator access.";
 }
 
 export function AuthProvider({
   children,
 }: AuthProviderProps) {
-  const [user, setUser] = useState<User | null>(null);
-  const [role, setRole] = useState<UserRole>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [user, setUser] =
+    useState<User | null>(null);
 
-  // Every auth/token event receives a sequence number. An older async
-  // role lookup is not allowed to overwrite a newer successful lookup.
-  const authSequenceRef = useRef(0);
-  const userRef = useRef<User | null>(null);
+  const [role, setRole] =
+    useState<UserRole>(null);
 
-  useEffect(() => {
-    userRef.current = user;
-  }, [user]);
+  const [loading, setLoading] =
+    useState(true);
+
+  const [initialized, setInitialized] =
+    useState(false);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  /*
+   * Prevent an older asynchronous role check from
+   * overwriting a newer successful check.
+   */
+  const roleRequestId = useRef(0);
 
   const resolveRole = useCallback(
     async (
       currentUser: User,
-      forceRefresh = false
+      reauthorize: boolean
     ): Promise<UserRole> => {
-      const resolvedRole = await getUserRole(
-        currentUser.uid,
-        forceRefresh
-      );
+      let resolvedRole =
+        await getRoleForUser(
+          currentUser,
+          false
+        );
 
-      return isValidRole(resolvedRole)
-        ? resolvedRole
-        : null;
+      if (
+        resolvedRole === "admin" ||
+        !reauthorize
+      ) {
+        return resolvedRole;
+      }
+
+      /*
+       * A persisted session can contain an older token that
+       * does not yet include the custom admin claim. Ask the
+       * secure server route to verify and refresh it.
+       */
+      resolvedRole =
+        await authorizeAdminSession(
+          currentUser
+        );
+
+      return resolvedRole;
     },
     []
   );
@@ -91,170 +127,194 @@ export function AuthProvider({
   const refreshRole = useCallback(
     async (
       currentUserOverride?: User | null,
-      forceRefresh = true
+      reauthorize = true
     ): Promise<UserRole> => {
       const targetUser =
-        currentUserOverride ?? userRef.current;
+        currentUserOverride ??
+        auth.currentUser;
 
       if (!targetUser) {
         setRole(null);
         return null;
       }
 
-      const requestSequence = ++authSequenceRef.current;
+      const requestId =
+        ++roleRequestId.current;
 
       try {
-        setLoading(true);
         setError(null);
 
-        const resolvedRole = await resolveRole(
-          targetUser,
-          forceRefresh
-        );
+        const resolvedRole =
+          await resolveRole(
+            targetUser,
+            reauthorize
+          );
 
-        if (requestSequence === authSequenceRef.current) {
+        if (
+          requestId ===
+          roleRequestId.current
+        ) {
           setUser(targetUser);
           setRole(resolvedRole);
         }
 
         return resolvedRole;
       } catch (roleError) {
-        console.error("Role refresh failed:", roleError);
-
-        if (requestSequence === authSequenceRef.current) {
+        if (
+          requestId ===
+          roleRequestId.current
+        ) {
           setRole(null);
-          setError("Unable to verify the account permission.");
+          setError(
+            getReadableAuthError(
+              roleError
+            )
+          );
         }
 
         return null;
-      } finally {
-        if (requestSequence === authSequenceRef.current) {
-          setLoading(false);
-        }
       }
     },
     [resolveRole]
   );
 
   useEffect(() => {
-    let isMounted = true;
-    let unsubscribe: (() => void) | undefined;
+    let active = true;
+    let unsubscribe:
+      | (() => void)
+      | undefined;
 
-    async function initializeAuthentication() {
+    async function startAuthObserver() {
       try {
-        setLoading(true);
-        setError(null);
-
         await ensureAuthPersistence();
 
-        if (!isMounted) {
+        if (!active) {
           return;
         }
 
-        unsubscribe = onIdTokenChanged(
-          auth,
-          async (currentUser) => {
-            const requestSequence =
-              ++authSequenceRef.current;
+        unsubscribe =
+          onIdTokenChanged(
+            auth,
+            async (currentUser) => {
+              const requestId =
+                ++roleRequestId.current;
 
-            if (!isMounted) {
-              return;
-            }
+              setLoading(true);
+              setError(null);
+              setUser(currentUser);
 
-            setLoading(true);
-            setError(null);
-            setUser(currentUser);
-            userRef.current = currentUser;
-
-            if (!currentUser) {
-              setRole(null);
-              setLoading(false);
-              return;
-            }
-
-            try {
-              const resolvedRole = await resolveRole(
-                currentUser,
-                false
-              );
-
-              if (
-                isMounted &&
-                requestSequence === authSequenceRef.current
-              ) {
-                setRole(resolvedRole);
+              if (!currentUser) {
+                setRole(null);
+                setInitialized(true);
+                setLoading(false);
+                return;
               }
-            } catch (roleError) {
-              console.error("Role loading error:", roleError);
 
-              if (
-                isMounted &&
-                requestSequence === authSequenceRef.current
-              ) {
+              try {
+                const resolvedRole =
+                  await resolveRole(
+                    currentUser,
+                    true
+                  );
+
+                if (
+                  !active ||
+                  requestId !==
+                    roleRequestId.current
+                ) {
+                  return;
+                }
+
+                setRole(resolvedRole);
+              } catch (roleError) {
+                if (
+                  !active ||
+                  requestId !==
+                    roleRequestId.current
+                ) {
+                  return;
+                }
+
                 setRole(null);
                 setError(
-                  "Unable to verify the account permission."
+                  getReadableAuthError(
+                    roleError
+                  )
                 );
-              }
-            } finally {
-              if (
-                isMounted &&
-                requestSequence === authSequenceRef.current
-              ) {
-                setLoading(false);
+              } finally {
+                if (
+                  active &&
+                  requestId ===
+                    roleRequestId.current
+                ) {
+                  setInitialized(true);
+                  setLoading(false);
+                }
               }
             }
-          }
-        );
-      } catch (persistenceError) {
-        console.error(
-          "Firebase auth persistence failed:",
-          persistenceError
-        );
-
-        if (isMounted) {
-          setUser(null);
-          userRef.current = null;
-          setRole(null);
-          setError(
-            "The browser could not save the login session. Enable site storage or try a normal browser window."
           );
-          setLoading(false);
+      } catch (persistenceError) {
+        if (!active) {
+          return;
         }
+
+        setUser(null);
+        setRole(null);
+        setError(
+          getReadableAuthError(
+            persistenceError
+          )
+        );
+        setInitialized(true);
+        setLoading(false);
       }
     }
 
-    void initializeAuthentication();
+    void startAuthObserver();
 
     return () => {
-      isMounted = false;
-      authSequenceRef.current += 1;
+      active = false;
+      roleRequestId.current += 1;
       unsubscribe?.();
     };
   }, [resolveRole]);
 
-  const value = useMemo<AuthContextType>(
-    () => ({
-      user,
-      role,
-      loading,
-      error,
-      isAuthenticated: Boolean(user),
-      isAdmin: role === "admin",
-      refreshRole,
-    }),
-    [user, role, loading, error, refreshRole]
-  );
+  const value =
+    useMemo<AuthContextType>(
+      () => ({
+        user,
+        role,
+        loading,
+        initialized,
+        error,
+        isAuthenticated:
+          Boolean(user),
+        isAdmin:
+          role === "admin",
+        refreshRole,
+      }),
+      [
+        user,
+        role,
+        loading,
+        initialized,
+        error,
+        refreshRole,
+      ]
+    );
 
   return (
-    <AuthContext.Provider value={value}>
+    <AuthContext.Provider
+      value={value}
+    >
       {children}
     </AuthContext.Provider>
   );
 }
 
 export function useAuth() {
-  const context = useContext(AuthContext);
+  const context =
+    useContext(AuthContext);
 
   if (!context) {
     throw new Error(
