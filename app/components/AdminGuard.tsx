@@ -1,32 +1,23 @@
 "use client";
 
-import {
-  useEffect,
-  useMemo,
-} from "react";
-
+import { useEffect } from "react";
 import {
   usePathname,
   useRouter,
 } from "next/navigation";
 
-import {
-  useAuth,
-} from "../providers/AuthProvider";
+import { useAuth } from "../providers/AuthProvider";
+
+const ADMIN_ROLES = ["admin"] as const;
 
 type AdminGuardProps = {
   children: React.ReactNode;
-  allowedRoles?: string[];
+  allowedRoles?: readonly string[];
 };
-
-const DEFAULT_ALLOWED_ROLES = [
-  "admin",
-];
 
 export default function AdminGuard({
   children,
-  allowedRoles =
-    DEFAULT_ALLOWED_ROLES,
+  allowedRoles = ADMIN_ROLES,
 }: AdminGuardProps) {
   const {
     user,
@@ -39,73 +30,40 @@ export default function AdminGuard({
   const router = useRouter();
   const pathname = usePathname();
 
-  const accessAllowed = useMemo(
-    () =>
-      Boolean(
-        user &&
-        role &&
-        allowedRoles.includes(role)
-      ),
-    [
-      user,
-      role,
-      allowedRoles,
-    ]
+  const allowed = Boolean(
+    user && role && allowedRoles.includes(role)
   );
 
   useEffect(() => {
-    if (
-      !initialized ||
-      loading
-    ) {
+    if (!initialized || loading) {
       return;
     }
 
     if (!user) {
-      if (
-        pathname !== "/login"
-      ) {
-        router.replace(
-          "/login"
-        );
+      if (pathname !== "/login") {
+        router.replace("/login");
       }
-
       return;
     }
 
-    if (!accessAllowed) {
-      if (
-        pathname !== "/unauthorized"
-      ) {
-        router.replace(
-          "/unauthorized"
-        );
-      }
+    if (!allowed && pathname !== "/unauthorized") {
+      router.replace("/unauthorized");
     }
   }, [
     initialized,
     loading,
     user,
-    accessAllowed,
+    allowed,
     pathname,
     router,
   ]);
 
-  if (
-    !initialized ||
-    loading
-  ) {
+  if (!initialized || loading) {
     return (
       <div className="auth-loading">
         <div className="loader" />
-
-        <h3>
-          Restoring your admin session...
-        </h3>
-
-        <p>
-          IsdaGo Admin
-        </p>
+        <h3>Restoring your admin session...</h3>
+        <p>IsdaGo Admin</p>
       </div>
     );
   }
@@ -113,18 +71,12 @@ export default function AdminGuard({
   if (error) {
     return (
       <div className="auth-error">
-        <h3>
-          Authentication Error
-        </h3>
-
+        <h3>Authentication Error</h3>
         <p>{error}</p>
-
         <button
           className="btn btn-primary"
           type="button"
-          onClick={() =>
-            window.location.reload()
-          }
+          onClick={() => window.location.reload()}
         >
           Retry
         </button>
@@ -132,7 +84,7 @@ export default function AdminGuard({
     );
   }
 
-  if (!accessAllowed) {
+  if (!allowed) {
     return null;
   }
 

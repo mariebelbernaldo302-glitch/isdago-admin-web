@@ -22,8 +22,7 @@ export type UserPermissionProfile = {
 };
 
 const ADMIN_TEST_MODE =
-  process.env.NEXT_PUBLIC_ADMIN_TEST_MODE ===
-    "true" &&
+  process.env.NEXT_PUBLIC_ADMIN_TEST_MODE === "true" &&
   process.env.NODE_ENV !== "production";
 
 const VALID_ROLES = [
@@ -32,53 +31,44 @@ const VALID_ROLES = [
   "customer",
 ] as const;
 
-type ValidRole =
-  (typeof VALID_ROLES)[number];
+type ValidRole = (typeof VALID_ROLES)[number];
 
 export function isAdminTestMode() {
   return ADMIN_TEST_MODE;
 }
 
-export function validateRole(
-  role: unknown
-): UserRole {
+export function validateRole(role: unknown): UserRole {
   if (typeof role !== "string") {
     return null;
   }
 
-  const normalizedRole =
-    role.trim().toLowerCase();
+  const normalizedRole = role.trim().toLowerCase();
 
-  return VALID_ROLES.includes(
-    normalizedRole as ValidRole
-  )
+  return VALID_ROLES.includes(normalizedRole as ValidRole)
     ? (normalizedRole as ValidRole)
     : null;
 }
 
-function getRoleFromClaims(
+function roleFromTokenResult(
   tokenResult: IdTokenResult
 ): UserRole {
   if (tokenResult.claims.admin === true) {
     return "admin";
   }
 
-  return validateRole(
-    tokenResult.claims.role
-  );
+  return validateRole(tokenResult.claims.role);
 }
 
 export async function getRoleForUser(
   user: User,
   forceRefresh = false
 ): Promise<UserRole> {
-  const tokenResult =
-    await getIdTokenResult(
-      user,
-      forceRefresh
-    );
+  const tokenResult = await getIdTokenResult(
+    user,
+    forceRefresh
+  );
 
-  return getRoleFromClaims(tokenResult);
+  return roleFromTokenResult(tokenResult);
 }
 
 export async function getUserPermissionProfile(
@@ -102,10 +92,7 @@ export async function getUserPermissionProfile(
 
   const currentUser = auth.currentUser;
 
-  if (
-    !currentUser ||
-    currentUser.uid !== normalizedUid
-  ) {
+  if (!currentUser || currentUser.uid !== normalizedUid) {
     return null;
   }
 
@@ -118,9 +105,7 @@ export async function getUserPermissionProfile(
     return {
       uid: currentUser.uid,
       role,
-      status: role
-        ? "active"
-        : "unauthorized",
+      status: role ? "active" : "unauthorized",
       isActive: Boolean(role),
     };
   } catch {
@@ -132,21 +117,17 @@ export async function getUserRole(
   uid: string,
   forceRefresh = false
 ): Promise<UserRole> {
-  const profile =
-    await getUserPermissionProfile(
-      uid,
-      forceRefresh
-    );
+  const profile = await getUserPermissionProfile(
+    uid,
+    forceRefresh
+  );
 
   return profile?.role ?? null;
 }
 
 export async function hasRole(
   uid: string,
-  requiredRole: Exclude<
-    UserRole,
-    null
-  >
+  requiredRole: Exclude<UserRole, null>
 ) {
   const role = await getUserRole(uid);
   return role === requiredRole;
@@ -154,32 +135,20 @@ export async function hasRole(
 
 export async function hasAnyRole(
   uid: string,
-  requiredRoles: Exclude<
-    UserRole,
-    null
-  >[]
+  requiredRoles: Exclude<UserRole, null>[]
 ) {
   const role = await getUserRole(uid);
-
-  return role
-    ? requiredRoles.includes(role)
-    : false;
+  return role ? requiredRoles.includes(role) : false;
 }
 
-export async function isAdmin(
-  uid: string
-) {
+export async function isAdmin(uid: string) {
   return hasRole(uid, "admin");
 }
 
-export async function isVendor(
-  uid: string
-) {
+export async function isVendor(uid: string) {
   return hasRole(uid, "vendor");
 }
 
-export async function isCustomer(
-  uid: string
-) {
+export async function isCustomer(uid: string) {
   return hasRole(uid, "customer");
 }

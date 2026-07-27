@@ -1,21 +1,11 @@
 "use client";
 
-import {
-  FormEvent,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
-import {
-  FirebaseError,
-} from "firebase/app";
-
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FirebaseError } from "firebase/app";
 import {
   signInWithEmailAndPassword,
   signOut,
 } from "firebase/auth";
-
 import {
   Eye,
   EyeOff,
@@ -24,33 +14,23 @@ import {
   Mail,
   ShieldCheck,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 
-import {
-  useRouter,
-} from "next/navigation";
-
-import IsdaGoLogo
-  from "../components/IsdaGoLogo";
-
-import {
-  createActivityLog,
-} from "../lib/activity";
-
+import IsdaGoLogo from "../components/IsdaGoLogo";
+import { createActivityLog } from "../lib/activity";
 import {
   auth,
   ensureAuthPersistence,
 } from "../lib/firebase";
+import { useAuth } from "../providers/AuthProvider";
 
-import {
-  useAuth,
-} from "../providers/AuthProvider";
+type AdminAuthorizationResponse = {
+  authorized?: boolean;
+  message?: string;
+};
 
-function getLoginErrorMessage(
-  error: unknown
-) {
-  if (
-    error instanceof FirebaseError
-  ) {
+function getLoginErrorMessage(error: unknown) {
+  if (error instanceof FirebaseError) {
     switch (error.code) {
       case "auth/invalid-email":
         return "Please enter a valid email address.";
@@ -74,92 +54,74 @@ function getLoginErrorMessage(
     }
   }
 
-  if (
-    error instanceof Error &&
-    error.message.trim()
-  ) {
+  if (error instanceof Error && error.message.trim()) {
     return error.message;
   }
 
   return "Unable to sign in. Please try again.";
 }
 
+async function authorizeAdmin(idToken: string) {
+  const response = await fetch("/api/admin/authorize", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+  });
+
+  const payload = (await response
+    .json()
+    .catch(() => null)) as AdminAuthorizationResponse | null;
+
+  if (!response.ok || payload?.authorized !== true) {
+    throw new Error(
+      payload?.message ||
+        "This account is not authorized to access the admin portal."
+    );
+  }
+}
+
 export default function LoginPage() {
   const router = useRouter();
-
   const {
     user,
     role,
     loading: authLoading,
-    initialized,
     refreshRole,
   } = useAuth();
 
-  const [email, setEmail] =
-    useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
-  const [password, setPassword] =
-    useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const [
-    showPassword,
-    setShowPassword,
-  ] = useState(false);
-
-  const [error, setError] =
-    useState("");
-
-  const [loading, setLoading] =
-    useState(false);
-
-  const canSubmit = useMemo(
-    () =>
+  const canSubmit = useMemo(() => {
+    return (
       email.trim().length > 0 &&
-      password.length > 0 &&
-      !loading &&
-      initialized,
-    [
-      email,
-      password,
-      loading,
-      initialized,
-    ]
-  );
+      password.trim().length > 0 &&
+      !loading
+    );
+  }, [email, password, loading]);
 
   useEffect(() => {
-    if (
-      initialized &&
-      !authLoading &&
-      user &&
-      role === "admin"
-    ) {
-      router.replace(
-        "/dashboard"
-      );
+    if (!authLoading && user && role === "admin") {
+      router.replace("/dashboard");
     }
-  }, [
-    initialized,
-    authLoading,
-    user,
-    role,
-    router,
-  ]);
+  }, [authLoading, user, role, router]);
 
   async function handleLogin(
     event: FormEvent<HTMLFormElement>
   ) {
     event.preventDefault();
 
-    const emailValue =
-      email.trim().toLowerCase();
+    const emailValue = email.trim().toLowerCase();
 
-    if (
-      !emailValue ||
-      !password
-    ) {
-      setError(
-        "Please enter your admin email and password."
-      );
+    if (!emailValue || !password) {
+      setError("Please enter your admin email and password.");
       return;
     }
 
@@ -168,51 +130,45 @@ export default function LoginPage() {
       setError("");
 
       /*
-       * Set local persistence before signing in so the
-       * Vercel-hosted session survives navigation and refresh.
+       * Step 1: Firebase Authentication verifies the email
+       * and password through the browser SDK.
        */
       await ensureAuthPersistence();
 
-      const credential =
-        await signInWithEmailAndPassword(
-          auth,
-          emailValue,
-          password
-        );
+      const credential = await signInWithEmailAndPassword(
+        auth,
+        emailValue,
+        password
+      );
 
       /*
-       * Server-verifies the allowlisted admin, creates the
-       * database profile, adds custom claims, and refreshes
-       * the client's role.
+       * Step 2: Send the signed-in user's Firebase ID token
+       * to a server-only API route.
+       *
+       * The API route verifies the token with Firebase Admin,
+       * checks FIREBASE_ADMIN_EMAILS, adds the admin claim,
+       * and creates/repairs users/{uid} in Realtime Database.
        */
-      const resolvedRole =
-        await refreshRole(
-          credential.user,
-          true
-        );
+      const resolvedRole = await refreshRole(
+        credential.user,
+        true
+      );
 
-      if (
-        resolvedRole !== "admin"
-      ) {
+      if (resolvedRole !== "admin") {
         await signOut(auth);
-
         setError(
-          "This account is not authorized to access the admin portal."
+          "Admin authorization was created, but the dashboard role could not be refreshed. Please sign in again."
         );
-
         return;
       }
 
       try {
         await createActivityLog({
           type: "Admin Login",
-          description:
-            `Admin signed in: ${
-              credential.user.email ??
-              emailValue
-            }`,
-          module:
-            "Authentication",
+          description: `Admin signed in: ${
+            credential.user.email ?? emailValue
+          }`,
+          module: "Authentication",
         });
       } catch (activityError) {
         console.warn(
@@ -221,21 +177,15 @@ export default function LoginPage() {
         );
       }
 
-      router.replace(
-        "/dashboard"
-      );
+      router.replace("/dashboard");
     } catch (loginError) {
       try {
         await signOut(auth);
       } catch {
-        // Ignore cleanup errors.
+        // Ignore sign-out cleanup errors.
       }
 
-      setError(
-        getLoginErrorMessage(
-          loginError
-        )
-      );
+      setError(getLoginErrorMessage(loginError));
     } finally {
       setLoading(false);
     }
@@ -243,28 +193,19 @@ export default function LoginPage() {
 
   return (
     <main className="login-page">
-      <form
-        className="login-card"
-        onSubmit={handleLogin}
-      >
+      <form className="login-card" onSubmit={handleLogin}>
         <IsdaGoLogo />
 
         <h1>IsdaGo Admin</h1>
 
         <p>
-          Sign in to manage the seafood marketplace,
-          vendors, products, orders, and transactions.
+          Sign in to manage the seafood marketplace, vendors,
+          products, orders, and transactions.
         </p>
 
         {error && (
-          <div
-            className="error-box"
-            role="alert"
-          >
-            <strong>
-              Login failed
-            </strong>
-
+          <div className="error-box" role="alert">
+            <strong>Login failed</strong>
             <p>{error}</p>
           </div>
         )}
@@ -272,10 +213,7 @@ export default function LoginPage() {
         <div className="form-grid">
           <div className="form-group">
             <label htmlFor="admin-email">
-              <Mail
-                size={16}
-                strokeWidth={2.4}
-              />
+              <Mail size={16} strokeWidth={2.4} />
               Email Address
             </label>
 
@@ -286,9 +224,7 @@ export default function LoginPage() {
               placeholder="admin@isdago.com"
               value={email}
               onChange={(event) =>
-                setEmail(
-                  event.target.value
-                )
+                setEmail(event.target.value)
               }
               autoComplete="email"
               disabled={loading}
@@ -298,10 +234,7 @@ export default function LoginPage() {
 
           <div className="form-group">
             <label htmlFor="admin-password">
-              <Lock
-                size={16}
-                strokeWidth={2.4}
-              />
+              <Lock size={16} strokeWidth={2.4} />
               Password
             </label>
 
@@ -309,17 +242,11 @@ export default function LoginPage() {
               <input
                 id="admin-password"
                 className="input"
-                type={
-                  showPassword
-                    ? "text"
-                    : "password"
-                }
+                type={showPassword ? "text" : "password"}
                 placeholder="Enter your password"
                 value={password}
                 onChange={(event) =>
-                  setPassword(
-                    event.target.value
-                  )
+                  setPassword(event.target.value)
                 }
                 autoComplete="current-password"
                 disabled={loading}
@@ -331,8 +258,7 @@ export default function LoginPage() {
                 className="password-toggle"
                 onClick={() =>
                   setShowPassword(
-                    (currentValue) =>
-                      !currentValue
+                    (currentValue) => !currentValue
                   )
                 }
                 aria-label={
@@ -343,15 +269,9 @@ export default function LoginPage() {
                 disabled={loading}
               >
                 {showPassword ? (
-                  <EyeOff
-                    size={18}
-                    strokeWidth={2.4}
-                  />
+                  <EyeOff size={18} strokeWidth={2.4} />
                 ) : (
-                  <Eye
-                    size={18}
-                    strokeWidth={2.4}
-                  />
+                  <Eye size={18} strokeWidth={2.4} />
                 )}
               </button>
             </div>
@@ -363,25 +283,14 @@ export default function LoginPage() {
           className="btn btn-primary"
           disabled={!canSubmit}
         >
-          <LogIn
-            size={18}
-            strokeWidth={2.4}
-          />
-
-          {loading
-            ? "Verifying admin access..."
-            : "Sign In"}
+          <LogIn size={18} strokeWidth={2.4} />
+          {loading ? "Verifying admin access..." : "Sign In"}
         </button>
 
         <div className="notice">
-          <ShieldCheck
-            size={16}
-            strokeWidth={2.4}
-          />
-
-          Only Firebase accounts listed in the
-          server-side administrator allowlist may
-          access this dashboard.
+          <ShieldCheck size={16} strokeWidth={2.4} />
+          Only Firebase accounts listed in the server-side
+          administrator allowlist may access this dashboard.
         </div>
       </form>
     </main>
