@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Ban,
+  Clock,
   RotateCcw,
   ShieldAlert,
   X,
 } from "lucide-react";
+
+import type { ModerationDecision } from "../lib/accountModeration";
 
 export type AccountModerationAction = "suspend" | "disable" | "restore";
 
@@ -18,8 +21,46 @@ type AccountModerationDialogProps = {
   action: AccountModerationAction;
   processing?: boolean;
   onClose: () => void;
-  onConfirm: (reason: string) => Promise<void> | void;
+  onConfirm: (decision: ModerationDecision) => Promise<void> | void;
 };
+
+type ReasonOption = {
+  value: string;
+  label: string;
+};
+
+const CUSTOMER_REASONS: ReasonOption[] = [
+  { value: "fake_orders", label: "Fake or abusive orders" },
+  { value: "fraud_scam", label: "Fraud or scam activity" },
+  { value: "payment_abuse", label: "Payment abuse or chargeback misuse" },
+  { value: "harassment", label: "Harassment or abusive behavior" },
+  { value: "spam", label: "Spam or disruptive activity" },
+  { value: "policy_violation", label: "Marketplace policy violation" },
+  { value: "repeated_violations", label: "Repeated policy violations" },
+  { value: "other", label: "Other safety or trust concern" },
+];
+
+const VENDOR_REASONS: ReasonOption[] = [
+  { value: "fraud_scam", label: "Fraud or scam activity" },
+  { value: "misleading_listing", label: "Misleading product or price information" },
+  { value: "unsafe_goods", label: "Unsafe or prohibited marketplace item" },
+  { value: "non_delivery", label: "Repeated non-delivery or fulfillment failure" },
+  { value: "fake_inventory", label: "Fake inventory or availability" },
+  { value: "harassment", label: "Harassment or abusive behavior" },
+  { value: "policy_violation", label: "Marketplace policy violation" },
+  { value: "repeated_violations", label: "Repeated policy violations" },
+  { value: "other", label: "Other safety or trust concern" },
+];
+
+const SUSPENSION_DURATIONS = [
+  { value: 1, label: "1 day" },
+  { value: 3, label: "3 days" },
+  { value: 7, label: "1 week" },
+  { value: 14, label: "2 weeks" },
+  { value: 30, label: "30 days" },
+  { value: 60, label: "60 days" },
+  { value: 90, label: "90 days" },
+] as const;
 
 const ACTION_CONTENT: Record<
   AccountModerationAction,
@@ -31,19 +72,20 @@ const ACTION_CONTENT: Record<
   }
 > = {
   suspend: {
-    title: "Suspend account",
+    title: "Temporarily suspend account",
     button: "Confirm suspension",
     description:
-      "Temporarily block this account while preserving reports, orders, and audit evidence.",
-    helper: "A clear reason is required and will be recorded in the audit trail.",
+      "Temporarily block marketplace access and show the user the reason, duration, and exact return date when they try to sign in.",
+    helper:
+      "The user will remain identifiable in Firebase, but protected marketplace screens will be blocked until the suspension expires or an admin restores access.",
   },
   disable: {
     title: "Disable account access",
     button: "Disable account",
     description:
-      "Disable future access without deleting investigation evidence from Firebase.",
+      "Block future marketplace access until an administrator manually restores the account.",
     helper:
-      "This does not delete the Firebase Authentication identity. Permanent Auth deletion requires a protected Admin SDK endpoint.",
+      "Use Disable for serious or indefinite restrictions. Use Suspend when access should return after a set period.",
   },
   restore: {
     title: "Restore account",
@@ -54,6 +96,15 @@ const ACTION_CONTENT: Record<
   },
 };
 
+function formatReturnDate(days: number) {
+  const date = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+
+  return date.toLocaleString("en-PH", {
+    dateStyle: "full",
+    timeStyle: "short",
+  });
+}
+
 export default function AccountModerationDialog({
   open,
   accountName,
@@ -63,14 +114,24 @@ export default function AccountModerationDialog({
   onClose,
   onConfirm,
 }: AccountModerationDialogProps) {
-  const [reason, setReason] = useState("");
+  const [reasonCode, setReasonCode] = useState("");
+  const [details, setDetails] = useState("");
+  const [suspensionDays, setSuspensionDays] = useState(7);
   const [error, setError] = useState("");
   const content = ACTION_CONTENT[action];
   const requiresReason = action !== "restore";
+  const reasonOptions = accountRole === "vendor" ? VENDOR_REASONS : CUSTOMER_REASONS;
+
+  const reasonLabel = useMemo(
+    () => reasonOptions.find((reason) => reason.value === reasonCode)?.label || "",
+    [reasonCode, reasonOptions],
+  );
 
   useEffect(() => {
     if (open) {
-      setReason("");
+      setReasonCode("");
+      setDetails("");
+      setSuspensionDays(7);
       setError("");
     }
   }, [open, action]);
@@ -80,15 +141,31 @@ export default function AccountModerationDialog({
   }
 
   async function submit() {
-    const normalizedReason = reason.trim();
+    const normalizedDetails = details.trim();
 
-    if (requiresReason && normalizedReason.length < 5) {
-      setError("Enter a clear reason of at least 5 characters.");
+    if (requiresReason && !reasonCode) {
+      setError("Choose why this account is being restricted.");
+      return;
+    }
+
+    if (reasonCode === "other" && normalizedDetails.length < 5) {
+      setError("Add a short explanation when you choose Other.");
+      return;
+    }
+
+    if (action === "suspend" && suspensionDays < 1) {
+      setError("Choose a valid suspension duration.");
       return;
     }
 
     setError("");
-    await onConfirm(normalizedReason);
+
+    await onConfirm({
+      reasonCode: action === "restore" ? "admin_restore" : reasonCode,
+      reasonLabel: action === "restore" ? "Access restored by administrator" : reasonLabel,
+      details: normalizedDetails,
+      suspensionDays: action === "suspend" ? suspensionDays : null,
+    });
   }
 
   const Icon =
@@ -132,19 +209,70 @@ export default function AccountModerationDialog({
 
           <p className="account-moderation-description">{content.description}</p>
 
-          <label className="form-group" htmlFor="moderationReason">
+          {requiresReason && (
+            <label className="form-group" htmlFor="moderationReason">
+              <span>Why is this account being restricted?</span>
+              <select
+                id="moderationReason"
+                className="select"
+                value={reasonCode}
+                onChange={(event) => setReasonCode(event.target.value)}
+                disabled={processing}
+              >
+                <option value="">Select a reason</option>
+                {reasonOptions.map((reason) => (
+                  <option key={reason.value} value={reason.value}>
+                    {reason.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {action === "suspend" && (
+            <div className="account-moderation-duration-grid">
+              <label className="form-group" htmlFor="suspensionDuration">
+                <span>Suspension duration</span>
+                <select
+                  id="suspensionDuration"
+                  className="select"
+                  value={suspensionDays}
+                  onChange={(event) => setSuspensionDays(Number(event.target.value))}
+                  disabled={processing}
+                >
+                  {SUSPENSION_DURATIONS.map((duration) => (
+                    <option key={duration.value} value={duration.value}>
+                      {duration.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="account-moderation-return-preview">
+                <Clock size={18} strokeWidth={2.3} />
+                <div>
+                  <span>Automatic return date</span>
+                  <strong>{formatReturnDate(suspensionDays)}</strong>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <label className="form-group" htmlFor="moderationDetails">
             <span>
-              {requiresReason ? "Reason for this action" : "Restoration note (optional)"}
+              {action === "restore"
+                ? "Restoration note (optional)"
+                : "Explanation shown to the user (recommended)"}
             </span>
             <textarea
-              id="moderationReason"
+              id="moderationDetails"
               className="textarea"
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
+              value={details}
+              onChange={(event) => setDetails(event.target.value)}
               placeholder={
-                requiresReason
-                  ? "Example: Confirmed scam report after reviewing the submitted evidence."
-                  : "Add an internal note about why access is being restored."
+                action === "restore"
+                  ? "Example: Case reviewed and the restriction can now be lifted."
+                  : "Example: Multiple confirmed fake orders were placed after previous warnings."
               }
               maxLength={500}
               disabled={processing}

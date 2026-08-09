@@ -2,8 +2,8 @@
   --monitor-navy: #0f172a;
   --monitor-muted: #64748b;
   --monitor-border: #e2e8f0;
-  --monitor-blue: #087ca7;
-  --monitor-teal: #0f9f8f;
+  --monitor-blue: #073c52;
+  --monitor-teal: #155b2a;
 }
 
 .activity-monitor-notice {
@@ -13,9 +13,9 @@
   align-items: center;
   margin-bottom: 18px;
   padding: 14px 16px;
-  border: 1px solid #bae6fd;
+  border: 1px solid #cfe2e5;
   border-radius: 16px;
-  background: linear-gradient(135deg, #f0f9ff 0%, #f0fdfa 100%);
+  background: linear-gradient(135deg, #eef5f6 0%, #f0fdfa 100%);
   color: var(--monitor-navy);
 }
 
@@ -126,7 +126,7 @@
 }
 
 .activity-monitor-table tbody tr:hover {
-  background: #f8fcfe;
+  background: #faf9f5;
 }
 
 .activity-monitor-event-cell {
@@ -165,10 +165,10 @@
   height: 38px;
   flex: 0 0 38px;
   place-items: center;
-  border: 1px solid #bae6fd;
+  border: 1px solid #cfe2e5;
   border-radius: 12px;
-  background: linear-gradient(145deg, #e0f2fe, #ecfeff);
-  color: #0369a1;
+  background: linear-gradient(145deg, #e8f2f4, #eef5f2);
+  color: #073c52;
   font-size: 0.7rem;
   font-weight: 900;
 }
@@ -220,15 +220,15 @@
 }
 
 .activity-monitor-role--customer {
-  border-color: #bae6fd;
-  background: #f0f9ff;
-  color: #0369a1;
+  border-color: #cfe2e5;
+  background: #eef5f6;
+  color: #073c52;
 }
 
 .activity-monitor-role--vendor {
   border-color: #99f6e4;
   background: #f0fdfa;
-  color: #0f766e;
+  color: #155b2a;
 }
 
 .activity-monitor-role--admin {

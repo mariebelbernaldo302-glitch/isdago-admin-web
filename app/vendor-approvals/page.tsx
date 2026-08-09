@@ -29,17 +29,19 @@ import {
   normalizeStatus,
   toDate,
 } from "../lib/format";
-import { useRealtimeCollection } from "../lib/useFirestoreCollection";
 import { sendNotifications } from "../lib/notificationFlow";
-import type { VendorApplication } from "../lib/types";
+import type { TimestampValue, VendorApplication } from "../lib/types";
+import { useRealtimeCollection } from "../lib/useFirestoreCollection";
 import { useAuth } from "../providers/AuthProvider";
 
 type VendorApplicationView = VendorApplication & {
+  [key: string]: unknown;
   uid?: string;
   vendorId?: string;
   owner?: string;
   name?: string;
   businessName?: string;
+  storeName?: string;
   vendorName?: string;
   ownerName?: string;
   email?: string;
@@ -50,11 +52,16 @@ type VendorApplicationView = VendorApplication & {
   barangay?: string;
   city?: string;
   province?: string;
+  description?: string;
   status?: string;
   dateApplied?: string;
-  createdAt?: number | string;
-  updatedAt?: number | string;
-  reviewedAt?: number | string;
+  submittedAt?: TimestampValue;
+  createdAt?: TimestampValue;
+  updatedAt?: TimestampValue;
+  reviewedAt?: TimestampValue;
+  approvedAt?: TimestampValue;
+  rejectedAt?: TimestampValue;
+  reviewedBy?: string;
 };
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected";
@@ -65,6 +72,17 @@ type DecisionTarget = {
   decision: VendorDecision;
 };
 
+type DetailField = {
+  label: string;
+  value: unknown;
+  fullWidth?: boolean;
+};
+
+type DocumentEntry = {
+  label: string;
+  value: string;
+};
+
 const STATUS_FILTERS: { label: string; value: StatusFilter }[] = [
   { label: "All Status", value: "all" },
   { label: "Pending", value: "pending" },
@@ -72,28 +90,77 @@ const STATUS_FILTERS: { label: string; value: StatusFilter }[] = [
   { label: "Rejected", value: "rejected" },
 ];
 
+const KNOWN_APPLICATION_KEYS = new Set([
+  "id",
+  "uid",
+  "vendorId",
+  "owner",
+  "ownerName",
+  "name",
+  "businessName",
+  "storeName",
+  "vendorName",
+  "email",
+  "phone",
+  "contact",
+  "address",
+  "location",
+  "barangay",
+  "city",
+  "province",
+  "description",
+  "status",
+  "applicationStatus",
+  "dateApplied",
+  "submittedAt",
+  "createdAt",
+  "updatedAt",
+  "reviewedAt",
+  "reviewedBy",
+  "approvedAt",
+  "rejectedAt",
+  "remarks",
+  "rejectionReason",
+  "documents",
+  "permitImage",
+  "validIdImage",
+  "businessImage",
+  "role",
+]);
+
+const SENSITIVE_FIELD_PATTERN =
+  /(password|passcode|token|secret|credential|hash|auth|session|private.?key)/i;
+
 function getApplicationBusinessName(application: VendorApplicationView) {
   return getName(
-    application.businessName,
+    application.businessName || application.storeName,
     application.vendorName || application.name,
-    "Unnamed Business"
+    "Unnamed Business",
   );
 }
 
 function getApplicationOwner(application: VendorApplicationView) {
   return getName(
     application.ownerName || application.owner,
-    application.vendorName || application.name,
-    "Not provided"
+    application.name || application.vendorName,
+    "Not provided",
   );
 }
 
 function getApplicationEmail(application: VendorApplicationView) {
-  return application.email || "";
+  return typeof application.email === "string" ? application.email : "";
 }
 
 function getApplicationContact(application: VendorApplicationView) {
-  return application.phone || application.contact || "-";
+  if (typeof application.phone === "string" && application.phone.trim()) {
+    return application.phone;
+  }
+
+  if (typeof application.contact === "string" && application.contact.trim()) {
+    return application.contact;
+  }
+
+  return "-";
 }
 
 function getApplicationLocation(application: VendorApplicationView) {
@@ -104,29 +171,42 @@ function getApplicationLocation(application: VendorApplicationView) {
     application.city,
     application.province,
   ]
-    .map((part) => part?.trim())
+    .filter((part): part is string => typeof part === "string")
+    .map((part) => part.trim())
     .filter(Boolean);
 
-  return locationParts.length > 0 ? locationParts.join(", ") : "-";
+  return locationParts.length > 0 ? Array.from(new Set(locationParts)).join(", ") : "-";
 }
 
 function getApplicationStatus(application: VendorApplicationView) {
-  return normalizeStatus(application.status || "pending");
-}
-
-function getApplicationCreatedTime(application: VendorApplicationView) {
-  return (
-    toDate(
-      application.createdAt ||
-        application.updatedAt ||
-        application.reviewedAt ||
-        application.dateApplied
-    )?.getTime() ?? 0
+  return normalizeStatus(
+    (typeof application.status === "string" && application.status) ||
+      (typeof application.applicationStatus === "string" &&
+        application.applicationStatus) ||
+      "pending",
   );
 }
 
+function getApplicationCreatedValue(application: VendorApplicationView) {
+  return (
+    application.submittedAt ||
+    application.createdAt ||
+    application.dateApplied ||
+    application.updatedAt ||
+    application.reviewedAt
+  );
+}
+
+function getApplicationCreatedTime(application: VendorApplicationView) {
+  return toDate(getApplicationCreatedValue(application))?.getTime() ?? 0;
+}
+
 function getVendorUid(application: VendorApplicationView) {
-  return application.vendorId || application.uid || application.id;
+  const vendorId =
+    typeof application.vendorId === "string" ? application.vendorId.trim() : "";
+  const uid = typeof application.uid === "string" ? application.uid.trim() : "";
+
+  return vendorId || uid || application.id;
 }
 
 function isPendingApplication(application: VendorApplicationView) {
@@ -150,12 +230,143 @@ function isRejectedApplication(application: VendorApplicationView) {
   return status === "rejected" || status === "declined";
 }
 
+function hasDisplayValue(value: unknown) {
+  if (value === null || value === undefined) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+
+  if (typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length > 0;
+  }
+
+  return true;
+}
+
+function prettifyKey(key: string) {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayValue(value: unknown) {
+  if (!hasDisplayValue(value)) {
+    return "Not provided";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function isProbablyLink(value: string) {
+  return /^(https?:\/\/|data:image\/)/i.test(value.trim());
+}
+
+function getDocumentEntries(application: VendorApplicationView): DocumentEntry[] {
+  const entries: DocumentEntry[] = [];
+
+  const addEntry = (label: string, value: unknown) => {
+    if (typeof value !== "string" || !value.trim()) {
+      return;
+    }
+
+    entries.push({ label, value: value.trim() });
+  };
+
+  addEntry("Business permit", application.permitImage);
+  addEntry("Valid ID", application.validIdImage);
+  addEntry("Business photo", application.businessImage);
+
+  const documents = application.documents;
+
+  if (Array.isArray(documents)) {
+    documents.forEach((document, index) => {
+      addEntry(`Document ${index + 1}`, document);
+    });
+  } else if (documents && typeof documents === "object") {
+    Object.entries(documents as Record<string, unknown>).forEach(([key, value]) => {
+      addEntry(prettifyKey(key), value);
+    });
+  }
+
+  return entries;
+}
+
+function getAdditionalFields(application: VendorApplicationView): DetailField[] {
+  return Object.entries(application)
+    .filter(([key, value]) => {
+      if (KNOWN_APPLICATION_KEYS.has(key)) {
+        return false;
+      }
+
+      if (SENSITIVE_FIELD_PATTERN.test(key)) {
+        return false;
+      }
+
+      return hasDisplayValue(value);
+    })
+    .map(([key, value]) => ({
+      label: prettifyKey(key),
+      value,
+      fullWidth: typeof value === "object" && value !== null,
+    }));
+}
+
+function getApplicationSearchText(application: VendorApplicationView) {
+  const additionalText = getAdditionalFields(application)
+    .map((field) => `${field.label} ${displayValue(field.value)}`)
+    .join(" ");
+
+  return [
+    getApplicationBusinessName(application),
+    getApplicationOwner(application),
+    application.storeName,
+    application.email,
+    application.phone,
+    application.contact,
+    getApplicationLocation(application),
+    application.description,
+    application.status,
+    application.applicationStatus,
+    application.dateApplied,
+    additionalText,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 export default function VendorApprovalPage() {
   const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
+  const [reviewApplication, setReviewApplication] =
+    useState<VendorApplicationView | null>(null);
   const [decisionTarget, setDecisionTarget] =
     useState<DecisionTarget | null>(null);
   const [reviewNote, setReviewNote] = useState("");
@@ -167,7 +378,7 @@ export default function VendorApprovalPage() {
     error,
   } = useRealtimeCollection<VendorApplicationView>(
     "vendor_applications",
-    "createdAt"
+    "createdAt",
   );
 
   const approvalStats = useMemo(() => {
@@ -185,38 +396,28 @@ export default function VendorApprovalPage() {
     return [...applications]
       .filter((application) => {
         const status = getApplicationStatus(application);
-
         const matchesStatus =
           statusFilter === "all" ||
           status === statusFilter ||
           (statusFilter === "pending" && isPendingApplication(application)) ||
           (statusFilter === "approved" && isApprovedApplication(application)) ||
           (statusFilter === "rejected" && isRejectedApplication(application));
-
-        const searchableText = [
-          getApplicationBusinessName(application),
-          getApplicationOwner(application),
-          application.email,
-          application.phone,
-          application.contact,
-          getApplicationLocation(application),
-          application.status,
-          application.dateApplied,
-        ]
-          .join(" ")
-          .toLowerCase();
-
-        const matchesSearch = !query || searchableText.includes(query);
+        const matchesSearch =
+          !query || getApplicationSearchText(application).includes(query);
 
         return matchesStatus && matchesSearch;
       })
-      .sort((firstApplication, secondApplication) => {
-        return (
+      .sort(
+        (firstApplication, secondApplication) =>
           getApplicationCreatedTime(secondApplication) -
-          getApplicationCreatedTime(firstApplication)
-        );
-      });
+          getApplicationCreatedTime(firstApplication),
+      );
   }, [applications, search, statusFilter]);
+
+  function openReview(application: VendorApplicationView) {
+    setFeedback("");
+    setReviewApplication(application);
+  }
 
   function openDecision(
     application: VendorApplicationView,
@@ -242,7 +443,10 @@ export default function VendorApprovalPage() {
     const businessName = getApplicationBusinessName(application);
     const ownerName = getApplicationOwner(application);
     const email = getApplicationEmail(application);
-    const phone = application.phone || application.contact || "";
+    const phone = getApplicationContact(application) === "-"
+      ? ""
+      : getApplicationContact(application);
+    const submittedAt = getApplicationCreatedValue(application) || now;
 
     if (!vendorUid) {
       setFeedback("Unable to approve vendor. Missing vendor UID.");
@@ -257,6 +461,7 @@ export default function VendorApprovalPage() {
         [`vendor_applications/${application.id}/uid`]: vendorUid,
         [`vendor_applications/${application.id}/vendorId`]: vendorUid,
         [`vendor_applications/${application.id}/status`]: "approved",
+        [`vendor_applications/${application.id}/applicationStatus`]: "approved",
         [`vendor_applications/${application.id}/remarks`]: note || null,
         [`vendor_applications/${application.id}/reviewedAt`]: now,
         [`vendor_applications/${application.id}/reviewedBy`]: user?.uid || "admin",
@@ -266,32 +471,51 @@ export default function VendorApprovalPage() {
         [`vendors/${vendorUid}/uid`]: vendorUid,
         [`vendors/${vendorUid}/vendorId`]: vendorUid,
         [`vendors/${vendorUid}/businessName`]: businessName,
-        [`vendors/${vendorUid}/storeName`]: businessName,
-        [`vendors/${vendorUid}/vendorName`]: application.vendorName || businessName,
+        [`vendors/${vendorUid}/storeName`]:
+          (typeof application.storeName === "string" && application.storeName) ||
+          businessName,
+        [`vendors/${vendorUid}/vendorName`]:
+          (typeof application.vendorName === "string" && application.vendorName) ||
+          businessName,
         [`vendors/${vendorUid}/ownerName`]: ownerName,
         [`vendors/${vendorUid}/name`]: ownerName,
         [`vendors/${vendorUid}/email`]: email,
         [`vendors/${vendorUid}/phone`]: phone,
         [`vendors/${vendorUid}/contact`]: phone,
-        [`vendors/${vendorUid}/address`]: application.address || "",
-        [`vendors/${vendorUid}/location`]: application.location || "",
-        [`vendors/${vendorUid}/barangay`]: application.barangay || "",
-        [`vendors/${vendorUid}/city`]: application.city || "",
-        [`vendors/${vendorUid}/province`]: application.province || "",
+        [`vendors/${vendorUid}/address`]:
+          typeof application.address === "string" ? application.address : "",
+        [`vendors/${vendorUid}/location`]:
+          typeof application.location === "string" ? application.location : "",
+        [`vendors/${vendorUid}/barangay`]:
+          typeof application.barangay === "string" ? application.barangay : "",
+        [`vendors/${vendorUid}/city`]:
+          typeof application.city === "string" ? application.city : "",
+        [`vendors/${vendorUid}/province`]:
+          typeof application.province === "string" ? application.province : "",
+        [`vendors/${vendorUid}/description`]:
+          typeof application.description === "string" ? application.description : "",
+        [`vendors/${vendorUid}/documents`]: application.documents || null,
+        [`vendors/${vendorUid}/permitImage`]: application.permitImage || null,
+        [`vendors/${vendorUid}/validIdImage`]: application.validIdImage || null,
+        [`vendors/${vendorUid}/businessImage`]: application.businessImage || null,
         [`vendors/${vendorUid}/role`]: "vendor",
         [`vendors/${vendorUid}/status`]: "active",
         [`vendors/${vendorUid}/applicationStatus`]: "approved",
         [`vendors/${vendorUid}/approvedAt`]: now,
         [`vendors/${vendorUid}/updatedAt`]: now,
-        [`vendors/${vendorUid}/createdAt`]: application.createdAt || now,
+        [`vendors/${vendorUid}/createdAt`]: submittedAt,
 
         [`users/${vendorUid}/uid`]: vendorUid,
         [`users/${vendorUid}/vendorId`]: vendorUid,
         [`users/${vendorUid}/name`]: ownerName,
         [`users/${vendorUid}/ownerName`]: ownerName,
         [`users/${vendorUid}/businessName`]: businessName,
-        [`users/${vendorUid}/storeName`]: businessName,
-        [`users/${vendorUid}/vendorName`]: application.vendorName || businessName,
+        [`users/${vendorUid}/storeName`]:
+          (typeof application.storeName === "string" && application.storeName) ||
+          businessName,
+        [`users/${vendorUid}/vendorName`]:
+          (typeof application.vendorName === "string" && application.vendorName) ||
+          businessName,
         [`users/${vendorUid}/email`]: email,
         [`users/${vendorUid}/phone`]: phone,
         [`users/${vendorUid}/contact`]: phone,
@@ -300,7 +524,7 @@ export default function VendorApprovalPage() {
         [`users/${vendorUid}/applicationStatus`]: "approved",
         [`users/${vendorUid}/approvedAt`]: now,
         [`users/${vendorUid}/updatedAt`]: now,
-        [`users/${vendorUid}/createdAt`]: application.createdAt || now,
+        [`users/${vendorUid}/createdAt`]: submittedAt,
       });
 
       try {
@@ -343,11 +567,15 @@ export default function VendorApprovalPage() {
           },
         );
       } catch (notificationError) {
-        console.error("Vendor approved, but notification delivery failed:", notificationError);
+        console.error(
+          "Vendor approved, but notification delivery failed:",
+          notificationError,
+        );
       }
 
       setFeedback(`${businessName} has been approved successfully.`);
       setDecisionTarget(null);
+      setReviewApplication(null);
     } catch (approveError) {
       console.error("Vendor approval failed:", approveError);
       setFeedback("Unable to approve vendor application. Please try again.");
@@ -377,6 +605,7 @@ export default function VendorApprovalPage() {
         [`vendor_applications/${application.id}/uid`]: vendorUid,
         [`vendor_applications/${application.id}/vendorId`]: vendorUid,
         [`vendor_applications/${application.id}/status`]: "rejected",
+        [`vendor_applications/${application.id}/applicationStatus`]: "rejected",
         [`vendor_applications/${application.id}/remarks`]: reason,
         [`vendor_applications/${application.id}/reviewedAt`]: now,
         [`vendor_applications/${application.id}/reviewedBy`]: user?.uid || "admin",
@@ -433,11 +662,15 @@ export default function VendorApprovalPage() {
           },
         );
       } catch (notificationError) {
-        console.error("Vendor rejected, but notification delivery failed:", notificationError);
+        console.error(
+          "Vendor rejected, but notification delivery failed:",
+          notificationError,
+        );
       }
 
       setFeedback(`${businessName} has been rejected.`);
       setDecisionTarget(null);
+      setReviewApplication(null);
     } catch (rejectError) {
       console.error("Vendor rejection failed:", rejectError);
       setFeedback("Unable to reject vendor application. Please try again.");
@@ -467,10 +700,17 @@ export default function VendorApprovalPage() {
     }
   }
 
+  const selectedAdditionalFields = reviewApplication
+    ? getAdditionalFields(reviewApplication)
+    : [];
+  const selectedDocuments = reviewApplication
+    ? getDocumentEntries(reviewApplication)
+    : [];
+
   return (
     <DashboardShell
       title="Vendor Approvals"
-      description="Verify seller identity and make a documented approval decision."
+      description="Open each application like a review file, verify all submitted details, then approve or reject it."
     >
       <div className="module-page">
         {error && (
@@ -520,7 +760,7 @@ export default function VendorApprovalPage() {
           title="Vendor Applications"
           description={`${formatNumber(filteredApplications.length)} application record${
             filteredApplications.length === 1 ? "" : "s"
-          } found.`}
+          } found. Open Review File to inspect the complete information saved by the vendor application.`}
           actions={
             <>
               <label className="topbar-search">
@@ -575,22 +815,24 @@ export default function VendorApprovalPage() {
                     <th>Location</th>
                     <th>Status</th>
                     <th>Date Applied</th>
-                    <th>Action</th>
+                    <th>Review</th>
                   </tr>
                 </thead>
 
                 <tbody>
                   {filteredApplications.map((application) => {
                     const status = getApplicationStatus(application);
-                    const pending = isPendingApplication(application);
-                    const approved = isApprovedApplication(application);
-                    const rejected = isRejectedApplication(application);
                     const isProcessing = processingId === application.id;
 
                     return (
                       <tr key={application.id}>
                         <td>
                           <strong>{getApplicationBusinessName(application)}</strong>
+                          {application.description && (
+                            <small className="vendor-application-table-note">
+                              {String(application.description)}
+                            </small>
+                          )}
                         </td>
 
                         <td>
@@ -600,9 +842,9 @@ export default function VendorApprovalPage() {
 
                         <td>
                           {application.email ? (
-                            <a href={`mailto:${application.email}`}>
+                            <a href={`mailto:${String(application.email)}`}>
                               <Mail size={14} strokeWidth={2.4} />{" "}
-                              {application.email}
+                              {String(application.email)}
                             </a>
                           ) : (
                             "-"
@@ -629,34 +871,17 @@ export default function VendorApprovalPage() {
                           <StatusBadge status={status} />
                         </td>
 
-                        <td>
-                          {formatDate(
-                            application.createdAt ||
-                              application.updatedAt ||
-                              application.dateApplied
-                          )}
-                        </td>
+                        <td>{formatDate(getApplicationCreatedValue(application))}</td>
 
                         <td>
-                          <div className="toolbar">
-                            <button
-                              type="button"
-                              className="btn btn-green"
-                              disabled={!pending || approved || isProcessing}
-                              onClick={() => openDecision(application, "approve")}
-                            >
-                              {isProcessing ? "Processing..." : "Approve"}
-                            </button>
-
-                            <button
-                              type="button"
-                              className="btn btn-red"
-                              disabled={!pending || rejected || isProcessing}
-                              onClick={() => openDecision(application, "reject")}
-                            >
-                              Reject
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={isProcessing}
+                            onClick={() => openReview(application)}
+                          >
+                            {isProcessing ? "Processing..." : "Review File"}
+                          </button>
                         </td>
                       </tr>
                     );
@@ -667,6 +892,244 @@ export default function VendorApprovalPage() {
           )}
         </SectionCard>
       </div>
+
+      {reviewApplication && (
+        <div className="modal-overlay vendor-application-file-overlay" role="presentation">
+          <section
+            className="modal-container vendor-application-file"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="vendor-application-file-title"
+          >
+            <header className="modal-header vendor-application-file__header">
+              <div>
+                <small>VENDOR APPLICATION FILE</small>
+                <h2 id="vendor-application-file-title">
+                  {getApplicationBusinessName(reviewApplication)}
+                </h2>
+                <p>
+                  Review every application field stored in Firebase before making a decision.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="account-moderation-close"
+                onClick={() => !processingId && setReviewApplication(null)}
+                disabled={Boolean(processingId)}
+                aria-label="Close application file"
+              >
+                <X size={19} strokeWidth={2.4} />
+              </button>
+            </header>
+
+            <div className="modal-body vendor-application-file__body">
+              <div className="vendor-application-file__summary">
+                <div>
+                  <span>Status</span>
+                  <StatusBadge status={getApplicationStatus(reviewApplication)} />
+                </div>
+                <div>
+                  <span>Application ID</span>
+                  <strong>{reviewApplication.id}</strong>
+                </div>
+                <div>
+                  <span>Vendor UID</span>
+                  <strong>{getVendorUid(reviewApplication)}</strong>
+                </div>
+                <div>
+                  <span>Date submitted</span>
+                  <strong>{formatDate(getApplicationCreatedValue(reviewApplication))}</strong>
+                </div>
+              </div>
+
+              <section className="vendor-application-file__section">
+                <div className="vendor-application-file__section-heading">
+                  <UserRound size={18} strokeWidth={2.3} />
+                  <div>
+                    <h3>Applicant Details</h3>
+                    <p>Identity and contact information entered during application.</p>
+                  </div>
+                </div>
+                <div className="vendor-application-file__grid">
+                  <div className="vendor-application-field">
+                    <span>Owner name</span>
+                    <strong>{getApplicationOwner(reviewApplication)}</strong>
+                  </div>
+                  <div className="vendor-application-field">
+                    <span>Email address</span>
+                    <strong>{getApplicationEmail(reviewApplication) || "Not provided"}</strong>
+                  </div>
+                  <div className="vendor-application-field">
+                    <span>Phone number</span>
+                    <strong>{getApplicationContact(reviewApplication)}</strong>
+                  </div>
+                </div>
+              </section>
+
+              <section className="vendor-application-file__section">
+                <div className="vendor-application-file__section-heading">
+                  <Store size={18} strokeWidth={2.3} />
+                  <div>
+                    <h3>Business Details</h3>
+                    <p>Store information submitted by the vendor.</p>
+                  </div>
+                </div>
+                <div className="vendor-application-file__grid">
+                  <div className="vendor-application-field">
+                    <span>Store / business name</span>
+                    <strong>{getApplicationBusinessName(reviewApplication)}</strong>
+                  </div>
+                  <div className="vendor-application-field vendor-application-field--wide">
+                    <span>Business address</span>
+                    <strong>{getApplicationLocation(reviewApplication)}</strong>
+                  </div>
+                  <div className="vendor-application-field vendor-application-field--wide">
+                    <span>Business description</span>
+                    <strong>
+                      {displayValue(reviewApplication.description)}
+                    </strong>
+                  </div>
+                </div>
+              </section>
+
+              {selectedDocuments.length > 0 && (
+                <section className="vendor-application-file__section">
+                  <div className="vendor-application-file__section-heading">
+                    <ShieldCheck size={18} strokeWidth={2.3} />
+                    <div>
+                      <h3>Submitted Documents</h3>
+                      <p>Files or image references included in the application record.</p>
+                    </div>
+                  </div>
+                  <div className="vendor-document-grid">
+                    {selectedDocuments.map((document, index) => (
+                      <article
+                        className="vendor-document-card"
+                        key={`${document.label}-${index}`}
+                      >
+                        <span>{document.label}</span>
+                        {isProbablyLink(document.value) ? (
+                          <a
+                            href={document.value}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="vendor-document-link"
+                          >
+                            Open submitted file
+                          </a>
+                        ) : (
+                          <strong>{document.value}</strong>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {selectedAdditionalFields.length > 0 && (
+                <section className="vendor-application-file__section">
+                  <div className="vendor-application-file__section-heading">
+                    <ShieldCheck size={18} strokeWidth={2.3} />
+                    <div>
+                      <h3>Other Submitted Information</h3>
+                      <p>
+                        Additional fields found in Firebase are shown automatically so new
+                        application inputs are not hidden from the admin review.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="vendor-application-file__grid">
+                    {selectedAdditionalFields.map((field) => (
+                      <div
+                        className={`vendor-application-field${
+                          field.fullWidth ? " vendor-application-field--wide" : ""
+                        }`}
+                        key={field.label}
+                      >
+                        <span>{field.label}</span>
+                        {typeof field.value === "object" && field.value !== null ? (
+                          <pre>{displayValue(field.value)}</pre>
+                        ) : (
+                          <strong>{displayValue(field.value)}</strong>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {(reviewApplication.reviewedAt ||
+                reviewApplication.reviewedBy ||
+                reviewApplication.remarks ||
+                reviewApplication.approvedAt ||
+                reviewApplication.rejectedAt) && (
+                <section className="vendor-application-file__section">
+                  <div className="vendor-application-file__section-heading">
+                    <Clock size={18} strokeWidth={2.3} />
+                    <div>
+                      <h3>Admin Review History</h3>
+                      <p>Decision details already recorded for this application.</p>
+                    </div>
+                  </div>
+                  <div className="vendor-application-file__grid">
+                    <div className="vendor-application-field">
+                      <span>Reviewed by</span>
+                      <strong>{displayValue(reviewApplication.reviewedBy)}</strong>
+                    </div>
+                    <div className="vendor-application-field">
+                      <span>Reviewed at</span>
+                      <strong>{formatDate(reviewApplication.reviewedAt)}</strong>
+                    </div>
+                    <div className="vendor-application-field vendor-application-field--wide">
+                      <span>Admin remarks / reason</span>
+                      <strong>{displayValue(reviewApplication.remarks)}</strong>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              <div className="vendor-application-security-note">
+                Passwords and authentication secrets are intentionally never displayed in the
+                admin application file. Firebase Authentication manages passwords separately and
+                the vendor application record should not store them.
+              </div>
+            </div>
+
+            <footer className="modal-footer vendor-application-file__footer">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setReviewApplication(null)}
+                disabled={Boolean(processingId)}
+              >
+                Close
+              </button>
+
+              {isPendingApplication(reviewApplication) && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-red"
+                    onClick={() => openDecision(reviewApplication, "reject")}
+                    disabled={Boolean(processingId)}
+                  >
+                    Reject Application
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-green"
+                    onClick={() => openDecision(reviewApplication, "approve")}
+                    disabled={Boolean(processingId)}
+                  >
+                    Approve Vendor
+                  </button>
+                </>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
 
       {decisionTarget && (
         <div className="modal-overlay" role="presentation">
@@ -738,7 +1201,7 @@ export default function VendorApprovalPage() {
                   placeholder={
                     decisionTarget.decision === "reject"
                       ? "Explain which application requirement was not satisfied."
-                      : "Record verified documents or review observations."
+                      : "Record what you verified before approval."
                   }
                   maxLength={500}
                   disabled={Boolean(processingId)}

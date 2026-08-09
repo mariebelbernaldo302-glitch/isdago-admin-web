@@ -1,12 +1,16 @@
 import Link from "next/link";
 import { Home, LogIn, ShieldAlert } from "lucide-react";
 
+import IsdaGoLogo from "../components/IsdaGoLogo";
+
 export default function UnauthorizedPage() {
   return (
     <main className="login-page">
       <section className="login-card">
-        <div className="login-logo" aria-hidden="true">
-          <ShieldAlert size={38} strokeWidth={2.4} />
+        <IsdaGoLogo label="IsdaGo Admin" />
+
+        <div className="unauthorized-heading-icon" aria-hidden="true">
+          <ShieldAlert size={24} strokeWidth={2.4} />
         </div>
 
         <h1>Access Denied</h1>

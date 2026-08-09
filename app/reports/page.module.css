@@ -1,7 +1,7 @@
 .page {
-  --brand-900: #0b3440;
-  --brand-700: #0b6677;
-  --brand-600: #07849a;
+  --brand-900: #031d30;
+  --brand-700: #073c52;
+  --brand-600: #37625c;
   --brand-100: #dff4f6;
   --ink-950: #0f172a;
   --ink-700: #334155;
@@ -47,7 +47,7 @@
   position: absolute;
   inset: 0 auto 0 0;
   width: 5px;
-  background: linear-gradient(180deg, #0b6677, #13a6a3);
+  background: linear-gradient(180deg, #073c52, #13a6a3);
   content: "";
 }
 
@@ -557,9 +557,9 @@
 }
 
 .drawerBackdrop {
-  --brand-900: #0b3440;
-  --brand-700: #0b6677;
-  --brand-600: #07849a;
+  --brand-900: #031d30;
+  --brand-700: #073c52;
+  --brand-600: #37625c;
   --ink-950: #0f172a;
   --ink-700: #334155;
   --ink-500: #64748b;
@@ -770,10 +770,10 @@
   display: flex;
   align-items: flex-start;
   gap: 0.55rem;
-  border: 1px solid #bae6fd;
+  border: 1px solid #cfe2e5;
   border-radius: 12px;
-  background: #f0f9ff;
-  color: #075985;
+  background: #eef5f6;
+  color: #073c52;
   padding: 0.8rem 0.9rem;
   font-size: 0.78rem;
   font-weight: 700;
@@ -1457,7 +1457,7 @@
   left: 0;
   height: 4px;
   border-radius: 22px 22px 0 0;
-  background: linear-gradient(90deg, #0b6677, #0c8d9d, #25a7a4);
+  background: linear-gradient(90deg, #073c52, #0c8d9d, #25a7a4);
   content: "";
 }
 
@@ -1474,7 +1474,7 @@
 }
 
 .drawerTitle > span {
-  color: #0b6677;
+  color: #073c52;
   font-size: 0.62rem;
   letter-spacing: 0.12em;
 }
@@ -1633,7 +1633,7 @@
 }
 
 .sectionEyebrow {
-  color: #0b6677;
+  color: #073c52;
   letter-spacing: 0.11em;
 }
 
@@ -1664,7 +1664,7 @@
 .fullDescription {
   margin-top: 0.9rem;
   border: 1px solid #e4eaee;
-  border-left: 4px solid #0b7d8d;
+  border-left: 4px solid #155b2a;
   border-radius: 0 11px 11px 0;
   background: #fbfcfd;
   padding: 0.85rem 0.95rem;
@@ -1694,7 +1694,7 @@
 .sendReplyButton {
   min-height: 43px;
   border-radius: 10px;
-  background: #0b6677;
+  background: #073c52;
 }
 
 .timelineItem p {
@@ -1991,7 +1991,7 @@
   border: 1px solid #b9dce1;
   border-radius: 8px;
   background: #ffffff;
-  color: #0b6677;
+  color: #073c52;
   padding: 0 0.55rem;
   font-size: 0.62rem;
   font-weight: 800;
@@ -2031,12 +2031,12 @@
 
 .toneButton:hover {
   border-color: #8dc4cb;
-  color: #0b6677;
+  color: #073c52;
 }
 
 .toneButtonActive {
-  border-color: #0b7d8d;
-  background: #0b6677;
+  border-color: #155b2a;
+  background: #073c52;
   color: #ffffff;
   box-shadow: 0 3px 8px rgba(11, 102, 119, 0.16);
 }
@@ -2069,7 +2069,7 @@
 
 .composerHint svg {
   flex: 0 0 auto;
-  color: #0b7d8d;
+  color: #155b2a;
 }
 
 .replySection > .sendReplyButton {

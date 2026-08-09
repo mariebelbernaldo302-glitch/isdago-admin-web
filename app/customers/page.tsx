@@ -21,7 +21,10 @@ import EmptyState from "../components/EmptyState";
 import SectionCard from "../components/SectionCard";
 import StatCard from "../components/StatCard";
 import StatusBadge from "../components/StatusBadge";
-import { moderateAccount } from "../lib/accountModeration";
+import {
+  moderateAccount,
+  type ModerationDecision,
+} from "../lib/accountModeration";
 import {
   formatDate,
   formatNumber,
@@ -92,6 +95,27 @@ function getCustomerCreatedTime(customer: Customer) {
 
 function isRestricted(status: string) {
   return ["suspended", "disabled", "blocked", "inactive"].includes(status);
+}
+
+function getCustomerModeration(customer: Customer, user?: UserRecord) {
+  return {
+    reason: user?.moderationReason || customer.moderationReason || "",
+    details: user?.moderationDetails || customer.moderationDetails || "",
+    suspendedUntil: user?.suspendedUntil || customer.suspendedUntil,
+  };
+}
+
+function formatSuspensionUntil(value: UserRecord["suspendedUntil"]) {
+  const date = toDate(value);
+
+  if (!date) {
+    return "No return date";
+  }
+
+  return date.toLocaleString("en-PH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 export default function CustomersPage() {
@@ -197,7 +221,7 @@ export default function CustomersPage() {
       );
   }, [customersQuery.data, usersById, search, statusFilter]);
 
-  async function confirmModeration(reason: string) {
+  async function confirmModeration(decision: ModerationDecision) {
     if (!moderationTarget) {
       return;
     }
@@ -221,13 +245,17 @@ export default function CustomersPage() {
         profileName: getCustomerName(customer),
         role: "customer",
         status,
-        reason,
+        ...decision,
       });
 
       setFeedback(
         action === "restore"
           ? `${getCustomerName(customer)} can access the marketplace again.`
-          : `${getCustomerName(customer)} has been ${status}.`,
+          : `${getCustomerName(customer)} has been ${status}${
+              status === "suspended" && decision.suspensionDays
+                ? ` for ${decision.suspensionDays} day${decision.suspensionDays === 1 ? "" : "s"}`
+                : ""
+            }.`,
       );
       setModerationTarget(null);
     } catch (moderationError) {
@@ -348,6 +376,7 @@ export default function CustomersPage() {
                     <th>Location</th>
                     <th>Reports</th>
                     <th>Status</th>
+                    <th>Suspension Details</th>
                     <th>Registered</th>
                     <th>Access Control</th>
                   </tr>
@@ -361,6 +390,10 @@ export default function CustomersPage() {
                     );
                     const reports = reportCounts.get(uid) || 0;
                     const restricted = isRestricted(status);
+                    const moderation = getCustomerModeration(
+                      customer,
+                      usersById.get(uid),
+                    );
 
                     return (
                       <tr key={customer.id}>
@@ -388,6 +421,19 @@ export default function CustomersPage() {
                         </td>
                         <td>
                           <StatusBadge status={status} />
+                        </td>
+                        <td>
+                          {status === "suspended" || status === "disabled" ? (
+                            <div className="moderation-summary">
+                              <strong>{moderation.reason || "Administrative restriction"}</strong>
+                              {moderation.details && <span>{moderation.details}</span>}
+                              {status === "suspended" && (
+                                <small>Returns: {formatSuspensionUntil(moderation.suspendedUntil)}</small>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted-dash">—</span>
+                          )}
                         </td>
                         <td>
                           {formatDate(

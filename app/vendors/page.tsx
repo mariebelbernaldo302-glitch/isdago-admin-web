@@ -24,7 +24,10 @@ import EmptyState from "../components/EmptyState";
 import SectionCard from "../components/SectionCard";
 import StatCard from "../components/StatCard";
 import StatusBadge from "../components/StatusBadge";
-import { moderateAccount } from "../lib/accountModeration";
+import {
+  moderateAccount,
+  type ModerationDecision,
+} from "../lib/accountModeration";
 import {
   formatDate,
   formatNumber,
@@ -120,6 +123,27 @@ function isActiveStatus(status: string) {
 
 function isRestricted(status: string) {
   return ["suspended", "disabled", "blocked", "inactive", "rejected"].includes(status);
+}
+
+function getVendorModeration(vendor: Vendor, user?: UserRecord) {
+  return {
+    reason: user?.moderationReason || vendor.moderationReason || "",
+    details: user?.moderationDetails || vendor.moderationDetails || "",
+    suspendedUntil: user?.suspendedUntil || vendor.suspendedUntil,
+  };
+}
+
+function formatSuspensionUntil(value: UserRecord["suspendedUntil"]) {
+  const date = toDate(value);
+
+  if (!date) {
+    return "No return date";
+  }
+
+  return date.toLocaleString("en-PH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 export default function VendorsPage() {
@@ -241,7 +265,7 @@ export default function VendorsPage() {
       );
   }, [vendorsQuery.data, usersById, search, statusFilter]);
 
-  async function confirmModeration(reason: string) {
+  async function confirmModeration(decision: ModerationDecision) {
     if (!moderationTarget) {
       return;
     }
@@ -266,14 +290,18 @@ export default function VendorsPage() {
         profileName: getVendorBusinessName(vendor),
         role: "vendor",
         status,
-        reason,
+        ...decision,
         relatedProductIds: productIds,
       });
 
       setFeedback(
         action === "restore"
           ? `${getVendorBusinessName(vendor)} can access the vendor application again. Listings remain inactive for safety review.`
-          : `${getVendorBusinessName(vendor)} has been ${status}. ${productIds.length} listing${
+          : `${getVendorBusinessName(vendor)} has been ${status}${
+              status === "suspended" && decision.suspensionDays
+                ? ` for ${decision.suspensionDays} day${decision.suspensionDays === 1 ? "" : "s"}`
+                : ""
+            }. ${productIds.length} listing${
               productIds.length === 1 ? " was" : "s were"
             } deactivated.`,
       );
@@ -408,6 +436,7 @@ export default function VendorsPage() {
                     <th>Reports</th>
                     <th>Listings</th>
                     <th>Status</th>
+                    <th>Suspension Details</th>
                     <th>Access Control</th>
                   </tr>
                 </thead>
@@ -424,6 +453,10 @@ export default function VendorsPage() {
                       "inactive",
                     ].includes(status);
                     const rejected = status === "rejected";
+                    const moderation = getVendorModeration(
+                      vendor,
+                      usersById.get(uid),
+                    );
 
                     return (
                       <tr key={vendor.id}>
@@ -460,6 +493,19 @@ export default function VendorsPage() {
                               vendor.approvedAt || vendor.updatedAt || vendor.createdAt,
                             )}
                           </small>
+                        </td>
+                        <td>
+                          {status === "suspended" || status === "disabled" ? (
+                            <div className="moderation-summary">
+                              <strong>{moderation.reason || "Administrative restriction"}</strong>
+                              {moderation.details && <span>{moderation.details}</span>}
+                              {status === "suspended" && (
+                                <small>Returns: {formatSuspensionUntil(moderation.suspendedUntil)}</small>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted-dash">—</span>
+                          )}
                         </td>
                         <td>
                           <div className="toolbar account-actions">
