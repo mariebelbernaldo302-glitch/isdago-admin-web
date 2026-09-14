@@ -21,7 +21,7 @@ import SectionCard from "../components/SectionCard";
 import StatCard from "../components/StatCard";
 import StatusBadge from "../components/StatusBadge";
 import { createActivityLog } from "../lib/activity";
-import { updatePaths } from "../lib/database";
+import { getRecord, updatePaths } from "../lib/database";
 import {
   formatDate,
   formatNumber,
@@ -30,7 +30,11 @@ import {
   toDate,
 } from "../lib/format";
 import { sendNotifications } from "../lib/notificationFlow";
-import type { TimestampValue, VendorApplication } from "../lib/types";
+import type {
+  IdentityDocument,
+  TimestampValue,
+  VendorApplication,
+} from "../lib/types";
 import { useRealtimeCollection } from "../lib/useFirestoreCollection";
 import { useAuth } from "../providers/AuthProvider";
 
@@ -53,6 +57,10 @@ type VendorApplicationView = VendorApplication & {
   city?: string;
   province?: string;
   description?: string;
+  validIdType?: string;
+  documentsSubmitted?: boolean;
+  identityVerificationStatus?: string;
+  verificationDocumentPath?: string;
   status?: string;
   dateApplied?: string;
   submittedAt?: TimestampValue;
@@ -125,6 +133,10 @@ const KNOWN_APPLICATION_KEYS = new Set([
   "permitImage",
   "validIdImage",
   "businessImage",
+  "validIdType",
+  "documentsSubmitted",
+  "identityVerificationStatus",
+  "verificationDocumentPath",
   "role",
 ]);
 
@@ -285,7 +297,10 @@ function isProbablyLink(value: string) {
   return /^(https?:\/\/|data:image\/)/i.test(value.trim());
 }
 
-function getDocumentEntries(application: VendorApplicationView): DocumentEntry[] {
+function getDocumentEntries(
+  application: VendorApplicationView,
+  identityDocument?: IdentityDocument | null,
+): DocumentEntry[] {
   const entries: DocumentEntry[] = [];
 
   const addEntry = (label: string, value: unknown) => {
@@ -293,11 +308,22 @@ function getDocumentEntries(application: VendorApplicationView): DocumentEntry[]
       return;
     }
 
+    if (entries.some((entry) => entry.value === value.trim())) {
+      return;
+    }
+
     entries.push({ label, value: value.trim() });
   };
 
-  addEntry("Business permit", application.permitImage);
-  addEntry("Valid ID", application.validIdImage);
+  // New protected document path first. Legacy inline fields remain supported.
+  addEntry(
+    "Owner valid ID",
+    identityDocument?.validIdImage || application.validIdImage,
+  );
+  addEntry(
+    "Business permit",
+    identityDocument?.businessPermitImage || application.permitImage,
+  );
   addEntry("Business photo", application.businessImage);
 
   const documents = application.documents;
@@ -313,6 +339,24 @@ function getDocumentEntries(application: VendorApplicationView): DocumentEntry[]
   }
 
   return entries;
+}
+
+function hasRequiredVendorDocuments(
+  application: VendorApplicationView,
+  identityDocument?: IdentityDocument | null,
+) {
+  const validId =
+    identityDocument?.validIdImage || application.validIdImage || "";
+  const businessPermit =
+    identityDocument?.businessPermitImage || application.permitImage || "";
+  const validIdType =
+    identityDocument?.validIdType || application.validIdType || "";
+
+  return Boolean(
+    validId.trim() &&
+      businessPermit.trim() &&
+      validIdType.trim(),
+  );
 }
 
 function getAdditionalFields(application: VendorApplicationView): DetailField[] {
@@ -371,6 +415,10 @@ export default function VendorApprovalPage() {
     useState<DecisionTarget | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [decisionError, setDecisionError] = useState("");
+  const [reviewDocuments, setReviewDocuments] =
+    useState<IdentityDocument | null>(null);
+  const [reviewDocumentsLoading, setReviewDocumentsLoading] = useState(false);
+  const [reviewDocumentsError, setReviewDocumentsError] = useState("");
 
   const {
     data: applications,
@@ -414,9 +462,29 @@ export default function VendorApprovalPage() {
       );
   }, [applications, search, statusFilter]);
 
-  function openReview(application: VendorApplicationView) {
+  async function openReview(application: VendorApplicationView) {
+    const vendorUid = getVendorUid(application);
+
     setFeedback("");
     setReviewApplication(application);
+    setReviewDocuments(null);
+    setReviewDocumentsError("");
+    setReviewDocumentsLoading(true);
+
+    try {
+      const documents = await getRecord<IdentityDocument>(
+        "identity_documents",
+        vendorUid,
+      );
+      setReviewDocuments(documents);
+    } catch (documentError) {
+      console.error("Unable to load vendor verification documents:", documentError);
+      setReviewDocumentsError(
+        "Unable to load the vendor verification documents from Firebase.",
+      );
+    } finally {
+      setReviewDocumentsLoading(false);
+    }
   }
 
   function openDecision(
@@ -425,6 +493,16 @@ export default function VendorApprovalPage() {
   ) {
     if (!isPendingApplication(application)) {
       setFeedback("Only pending applications can receive a new decision.");
+      return;
+    }
+
+    if (
+      decision === "approve" &&
+      !hasRequiredVendorDocuments(application, reviewDocuments)
+    ) {
+      setFeedback(
+        "Cannot approve this vendor until a valid ID, ID type, and business permit are all available for review.",
+      );
       return;
     }
 
@@ -456,6 +534,18 @@ export default function VendorApprovalPage() {
     try {
       setProcessingId(application.id);
       setFeedback("");
+
+      const verificationDocument = await getRecord<IdentityDocument>(
+        "identity_documents",
+        vendorUid,
+      );
+
+      if (!hasRequiredVendorDocuments(application, verificationDocument)) {
+        setFeedback(
+          "Approval blocked: the vendor must submit a valid ID, ID type, and business permit.",
+        );
+        return;
+      }
 
       await updatePaths({
         [`vendor_applications/${application.id}/uid`]: vendorUid,
@@ -495,9 +585,12 @@ export default function VendorApprovalPage() {
         [`vendors/${vendorUid}/description`]:
           typeof application.description === "string" ? application.description : "",
         [`vendors/${vendorUid}/documents`]: application.documents || null,
-        [`vendors/${vendorUid}/permitImage`]: application.permitImage || null,
-        [`vendors/${vendorUid}/validIdImage`]: application.validIdImage || null,
         [`vendors/${vendorUid}/businessImage`]: application.businessImage || null,
+        [`vendors/${vendorUid}/validIdType`]:
+          verificationDocument?.validIdType || application.validIdType || "",
+        [`vendors/${vendorUid}/identityVerificationStatus`]: "verified",
+        [`vendors/${vendorUid}/verificationDocumentPath`]:
+          `identity_documents/${vendorUid}`,
         [`vendors/${vendorUid}/role`]: "vendor",
         [`vendors/${vendorUid}/status`]: "active",
         [`vendors/${vendorUid}/applicationStatus`]: "approved",
@@ -519,12 +612,32 @@ export default function VendorApprovalPage() {
         [`users/${vendorUid}/email`]: email,
         [`users/${vendorUid}/phone`]: phone,
         [`users/${vendorUid}/contact`]: phone,
+        [`users/${vendorUid}/validIdType`]:
+          verificationDocument?.validIdType || application.validIdType || "",
+        [`users/${vendorUid}/identityVerificationStatus`]: "verified",
+        [`users/${vendorUid}/verificationDocumentPath`]:
+          `identity_documents/${vendorUid}`,
         [`users/${vendorUid}/role`]: "vendor",
         [`users/${vendorUid}/status`]: "active",
         [`users/${vendorUid}/applicationStatus`]: "approved",
         [`users/${vendorUid}/approvedAt`]: now,
         [`users/${vendorUid}/updatedAt`]: now,
         [`users/${vendorUid}/createdAt`]: submittedAt,
+
+        [`vendor_applications/${application.id}/identityVerificationStatus`]:
+          "verified",
+        [`identity_documents/${vendorUid}/uid`]: vendorUid,
+        [`identity_documents/${vendorUid}/role`]: "vendor",
+        [`identity_documents/${vendorUid}/validIdType`]:
+          verificationDocument?.validIdType || application.validIdType || "",
+        [`identity_documents/${vendorUid}/validIdImage`]:
+          verificationDocument?.validIdImage || application.validIdImage || "",
+        [`identity_documents/${vendorUid}/businessPermitImage`]:
+          verificationDocument?.businessPermitImage || application.permitImage || "",
+        [`identity_documents/${vendorUid}/verificationStatus`]: "verified",
+        [`identity_documents/${vendorUid}/verifiedAt`]: now,
+        [`identity_documents/${vendorUid}/verifiedBy`]: user?.uid || "admin",
+        [`identity_documents/${vendorUid}/updatedAt`]: now,
       });
 
       try {
@@ -619,7 +732,11 @@ export default function VendorApprovalPage() {
         [`users/${vendorUid}/applicationStatus`]: "rejected",
         [`users/${vendorUid}/rejectionReason`]: reason,
         [`users/${vendorUid}/rejectedAt`]: now,
+        [`users/${vendorUid}/identityVerificationStatus`]: "rejected",
         [`users/${vendorUid}/updatedAt`]: now,
+
+        [`vendor_applications/${application.id}/identityVerificationStatus`]:
+          "rejected",
       });
 
       try {
@@ -704,8 +821,11 @@ export default function VendorApprovalPage() {
     ? getAdditionalFields(reviewApplication)
     : [];
   const selectedDocuments = reviewApplication
-    ? getDocumentEntries(reviewApplication)
+    ? getDocumentEntries(reviewApplication, reviewDocuments)
     : [];
+  const selectedDocumentsComplete = reviewApplication
+    ? hasRequiredVendorDocuments(reviewApplication, reviewDocuments)
+    : false;
 
   return (
     <DashboardShell
@@ -941,6 +1061,22 @@ export default function VendorApprovalPage() {
                   <span>Date submitted</span>
                   <strong>{formatDate(getApplicationCreatedValue(reviewApplication))}</strong>
                 </div>
+                <div>
+                  <span>Verification documents</span>
+                  <strong
+                    className={
+                      selectedDocumentsComplete
+                        ? "verification-complete"
+                        : "verification-incomplete"
+                    }
+                  >
+                    {reviewDocumentsLoading
+                      ? "Loading documents…"
+                      : selectedDocumentsComplete
+                        ? "Complete"
+                        : "Incomplete"}
+                  </strong>
+                </div>
               </div>
 
               <section className="vendor-application-file__section">
@@ -963,6 +1099,22 @@ export default function VendorApprovalPage() {
                   <div className="vendor-application-field">
                     <span>Phone number</span>
                     <strong>{getApplicationContact(reviewApplication)}</strong>
+                  </div>
+                  <div className="vendor-application-field">
+                    <span>Valid ID type</span>
+                    <strong>
+                      {reviewDocuments?.validIdType ||
+                        reviewApplication.validIdType ||
+                        "Not provided"}
+                    </strong>
+                  </div>
+                  <div className="vendor-application-field">
+                    <span>Identity verification</span>
+                    <strong>
+                      {reviewDocuments?.verificationStatus ||
+                        reviewApplication.identityVerificationStatus ||
+                        "submitted"}
+                    </strong>
                   </div>
                 </div>
               </section>
@@ -993,39 +1145,65 @@ export default function VendorApprovalPage() {
                 </div>
               </section>
 
-              {selectedDocuments.length > 0 && (
-                <section className="vendor-application-file__section">
-                  <div className="vendor-application-file__section-heading">
-                    <ShieldCheck size={18} strokeWidth={2.3} />
-                    <div>
-                      <h3>Submitted Documents</h3>
-                      <p>Files or image references included in the application record.</p>
+              <section className="vendor-application-file__section">
+                <div className="vendor-application-file__section-heading">
+                  <ShieldCheck size={18} strokeWidth={2.3} />
+                  <div>
+                    <h3>Required Verification Documents</h3>
+                    <p>Inspect the owner ID and business permit before approving the vendor.</p>
+                  </div>
+                </div>
+
+                {reviewDocumentsLoading ? (
+                  <div className="vendor-document-message">
+                    Loading protected verification documents…
+                  </div>
+                ) : reviewDocumentsError ? (
+                  <div className="vendor-document-warning">
+                    {reviewDocumentsError}
+                  </div>
+                ) : selectedDocuments.length === 0 ? (
+                  <div className="vendor-document-warning">
+                    No verification documents were found. Approval is disabled.
+                  </div>
+                ) : (
+                  <>
+                    {!selectedDocumentsComplete && (
+                      <div className="vendor-document-warning">
+                        Required documents are incomplete. A valid ID, its ID type, and a business permit are required before approval.
+                      </div>
+                    )}
+                    <div className="vendor-document-grid">
+                      {selectedDocuments.map((document, index) => (
+                        <article
+                          className="vendor-document-card"
+                          key={`${document.label}-${index}`}
+                        >
+                          <span>{document.label}</span>
+                          {/^(data:image\/)/i.test(document.value) ? (
+                            <img
+                              src={document.value}
+                              alt={`${document.label} submitted by vendor`}
+                              className="vendor-document-image"
+                            />
+                          ) : isProbablyLink(document.value) ? (
+                            <a
+                              href={document.value}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="vendor-document-link"
+                            >
+                              Open submitted file
+                            </a>
+                          ) : (
+                            <strong>{document.value}</strong>
+                          )}
+                        </article>
+                      ))}
                     </div>
-                  </div>
-                  <div className="vendor-document-grid">
-                    {selectedDocuments.map((document, index) => (
-                      <article
-                        className="vendor-document-card"
-                        key={`${document.label}-${index}`}
-                      >
-                        <span>{document.label}</span>
-                        {isProbablyLink(document.value) ? (
-                          <a
-                            href={document.value}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="vendor-document-link"
-                          >
-                            Open submitted file
-                          </a>
-                        ) : (
-                          <strong>{document.value}</strong>
-                        )}
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              )}
+                  </>
+                )}
+              </section>
 
               {selectedAdditionalFields.length > 0 && (
                 <section className="vendor-application-file__section">
@@ -1120,7 +1298,16 @@ export default function VendorApprovalPage() {
                     type="button"
                     className="btn btn-green"
                     onClick={() => openDecision(reviewApplication, "approve")}
-                    disabled={Boolean(processingId)}
+                    disabled={
+                      Boolean(processingId) ||
+                      reviewDocumentsLoading ||
+                      !selectedDocumentsComplete
+                    }
+                    title={
+                      selectedDocumentsComplete
+                        ? "Approve this verified vendor application"
+                        : "Valid ID and business permit are required before approval"
+                    }
                   >
                     Approve Vendor
                   </button>

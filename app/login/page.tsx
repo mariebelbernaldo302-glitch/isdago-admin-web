@@ -23,6 +23,10 @@ import {
   ensureAuthPersistence,
 } from "../lib/firebase";
 import { useAuth } from "../providers/AuthProvider";
+import {
+  consumeLogoutReason,
+  INACTIVITY_LOGOUT_REASON,
+} from "../lib/session-timeout";
 
 type AdminAuthorizationResponse = {
   authorized?: boolean;
@@ -97,6 +101,7 @@ export default function LoginPage() {
 
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [sessionNotice, setSessionNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
   const canSubmit = useMemo(() => {
@@ -112,6 +117,16 @@ export default function LoginPage() {
       router.replace("/dashboard");
     }
   }, [authLoading, user, role, router]);
+
+  useEffect(() => {
+    const reason = consumeLogoutReason();
+
+    if (reason === INACTIVITY_LOGOUT_REASON) {
+      setSessionNotice(
+        "You were automatically signed out after 5 minutes of inactivity."
+      );
+    }
+  }, []);
 
   async function handleLogin(
     event: FormEvent<HTMLFormElement>
@@ -202,6 +217,13 @@ export default function LoginPage() {
           Sign in to manage the seafood marketplace, vendors,
           products, orders, and transactions.
         </p>
+
+        {sessionNotice && (
+          <div className="notice" role="status">
+            <strong>Session ended</strong>
+            <div>{sessionNotice}</div>
+          </div>
+        )}
 
         {error && (
           <div className="error-box" role="alert">

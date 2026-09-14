@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   onAuthStateChanged,
+  signOut,
   type User,
 } from "firebase/auth";
 
@@ -24,6 +25,14 @@ import {
   getRoleForUser,
   type UserRole,
 } from "../lib/permissions";
+import {
+  INACTIVITY_TIMEOUT_MS,
+  LAST_ACTIVITY_STORAGE_KEY,
+  clearLastActivityAt,
+  markLastActivityAt,
+  readLastActivityAt,
+  setInactivityLogoutReason,
+} from "../lib/session-timeout";
 
 type AuthContextType = {
   user: User | null;
@@ -64,6 +73,113 @@ export function AuthProvider({
   const [error, setError] = useState<string | null>(null);
 
   const operationIdRef = useRef(0);
+  const inactivityTimerRef = useRef<number | null>(null);
+  const logoutInProgressRef = useRef(false);
+  const lastRecordedInteractionRef = useRef(0);
+
+  const clearInactivityTimer = useCallback(() => {
+    if (
+      typeof window !== "undefined" &&
+      inactivityTimerRef.current !== null
+    ) {
+      window.clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+  }, []);
+
+  const logoutForInactivity = useCallback(async () => {
+    if (logoutInProgressRef.current) {
+      return;
+    }
+
+    logoutInProgressRef.current = true;
+    clearInactivityTimer();
+
+    try {
+      setInactivityLogoutReason();
+      clearLastActivityAt();
+      await signOut(auth);
+    } catch (logoutError) {
+      console.warn(
+        "Unable to complete inactivity sign-out cleanly:",
+        logoutError
+      );
+    } finally {
+      if (typeof window !== "undefined") {
+        window.location.replace("/login");
+      }
+    }
+  }, [clearInactivityTimer]);
+
+  const armInactivityTimer = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    clearInactivityTimer();
+
+    if (!auth.currentUser || logoutInProgressRef.current) {
+      return;
+    }
+
+    let lastActivityAt = readLastActivityAt();
+
+    if (!lastActivityAt) {
+      lastActivityAt = markLastActivityAt();
+    }
+
+    const elapsed = Date.now() - lastActivityAt;
+
+    if (elapsed >= INACTIVITY_TIMEOUT_MS) {
+      void logoutForInactivity();
+      return;
+    }
+
+    const remaining = Math.max(
+      250,
+      INACTIVITY_TIMEOUT_MS - elapsed
+    );
+
+    inactivityTimerRef.current = window.setTimeout(() => {
+      const latestActivityAt = readLastActivityAt();
+
+      if (!latestActivityAt) {
+        markLastActivityAt();
+        armInactivityTimer();
+        return;
+      }
+
+      if (
+        Date.now() - latestActivityAt >=
+        INACTIVITY_TIMEOUT_MS
+      ) {
+        void logoutForInactivity();
+        return;
+      }
+
+      armInactivityTimer();
+    }, remaining);
+  }, [clearInactivityTimer, logoutForInactivity]);
+
+  const recordUserInteraction = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const now = Date.now();
+
+    // Avoid excessive localStorage writes during rapid scroll events.
+    if (now - lastRecordedInteractionRef.current < 500) {
+      return;
+    }
+
+    lastRecordedInteractionRef.current = now;
+    markLastActivityAt(now);
+
+    if (auth.currentUser) {
+      armInactivityTimer();
+    }
+  }, [armInactivityTimer]);
 
   const resolveRole = useCallback(
     async (
@@ -165,12 +281,6 @@ export function AuthProvider({
           return;
         }
 
-        /*
-         * Use onAuthStateChanged, not onIdTokenChanged. A forced token
-         * refresh is part of admin authorization. Listening to every token
-         * refresh can recursively start another role check and leave the
-         * loading screen waiting until a manual page refresh.
-         */
         unsubscribe = onAuthStateChanged(
           auth,
           (currentUser) => {
@@ -201,6 +311,93 @@ export function AuthProvider({
       unsubscribe?.();
     };
   }, [applyAuthenticatedUser]);
+
+  /*
+   * Global activity tracking. This remains active on the login page too,
+   * which means a fresh login always has a recent interaction timestamp.
+   * It also prevents an old, timed-out timestamp from immediately expiring
+   * a newly authenticated administrator.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === LAST_ACTIVITY_STORAGE_KEY) {
+        armInactivityTimer();
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        armInactivityTimer();
+      }
+    };
+
+    const handleFocus = () => {
+      armInactivityTimer();
+    };
+
+    window.addEventListener(
+      "pointerdown",
+      recordUserInteraction,
+      { passive: true }
+    );
+    window.addEventListener("keydown", recordUserInteraction);
+    window.addEventListener(
+      "touchstart",
+      recordUserInteraction,
+      { passive: true }
+    );
+    window.addEventListener("scroll", recordUserInteraction, {
+      passive: true,
+      capture: true,
+    });
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibility
+    );
+
+    return () => {
+      window.removeEventListener(
+        "pointerdown",
+        recordUserInteraction
+      );
+      window.removeEventListener(
+        "keydown",
+        recordUserInteraction
+      );
+      window.removeEventListener(
+        "touchstart",
+        recordUserInteraction
+      );
+      window.removeEventListener(
+        "scroll",
+        recordUserInteraction,
+        true
+      );
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibility
+      );
+    };
+  }, [armInactivityTimer, recordUserInteraction]);
+
+  useEffect(() => {
+    if (user) {
+      armInactivityTimer();
+    } else {
+      clearInactivityTimer();
+      logoutInProgressRef.current = false;
+    }
+
+    return clearInactivityTimer;
+  }, [user, armInactivityTimer, clearInactivityTimer]);
 
   const value = useMemo<AuthContextType>(
     () => ({

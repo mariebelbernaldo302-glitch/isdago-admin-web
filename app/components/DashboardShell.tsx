@@ -24,6 +24,7 @@ import type {
 
 import {
   ClipboardList,
+  BarChart3,
   LayoutDashboard,
   LogOut,
   Search,
@@ -72,6 +73,20 @@ const navigationItems: NavigationItem[] = [
       "home",
       "overview",
       "summary",
+    ],
+  },
+  {
+    href: "/system-reports",
+    label: "Whole-System Report",
+    icon: BarChart3,
+    group: "Overview",
+    keywords: [
+      "whole system report",
+      "system report",
+      "lgu report",
+      "livelihood report",
+      "print report",
+      "analytics",
     ],
   },
   {

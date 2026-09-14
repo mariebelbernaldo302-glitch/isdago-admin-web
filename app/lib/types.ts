@@ -96,6 +96,9 @@ export type UserRecord = {
   suspensionDays?: NumericValue;
   disabledAt?: TimestampValue;
   photo?: string;
+  validIdType?: string;
+  identityVerificationStatus?: GeneralStatus;
+  verificationDocumentPath?: string;
   createdAt?: TimestampValue;
   updatedAt?: TimestampValue;
   lastLoginAt?: TimestampValue;
@@ -114,6 +117,9 @@ export type Customer = {
   city?: string;
   province?: string;
   description?: string;
+  validIdType?: string;
+  identityVerificationStatus?: GeneralStatus;
+  verificationDocumentPath?: string;
   status?: GeneralStatus;
   moderationStatus?: GeneralStatus;
   moderationReasonCode?: string;
@@ -148,6 +154,9 @@ export type Vendor = {
   city?: string;
   province?: string;
   description?: string;
+  validIdType?: string;
+  identityVerificationStatus?: GeneralStatus;
+  verificationDocumentPath?: string;
   status?: GeneralStatus;
   moderationStatus?: GeneralStatus;
   moderationReasonCode?: string;
@@ -191,6 +200,10 @@ export type VendorApplication = {
   city?: string;
   province?: string;
   description?: string;
+  validIdType?: string;
+  documentsSubmitted?: boolean;
+  identityVerificationStatus?: GeneralStatus;
+  verificationDocumentPath?: string;
   status?: GeneralStatus;
   applicationStatus?: GeneralStatus;
   remarks?: string;
@@ -207,6 +220,22 @@ export type VendorApplication = {
   approvedAt?: TimestampValue;
   rejectedAt?: TimestampValue;
   dateApplied?: string;
+};
+
+export type IdentityDocument = {
+  id: string;
+  uid?: string;
+  role?: UserRole | string;
+  validIdType?: string;
+  validIdImage?: string;
+  businessPermitImage?: string;
+  verificationStatus?: GeneralStatus;
+  submittedAt?: TimestampValue;
+  updatedAt?: TimestampValue;
+  verifiedAt?: TimestampValue;
+  verifiedBy?: string;
+  rejectedAt?: TimestampValue;
+  rejectedBy?: string;
 };
 
 export type Category = {
@@ -283,6 +312,7 @@ export type Order = {
   items?: OrderItem[] | Record<string, OrderItem>;
   total?: NumericValue;
   amount?: NumericValue;
+  totalAmount?: NumericValue;
   deliveryFee?: NumericValue;
   grandTotal?: NumericValue;
   status?: OrderStatus;
