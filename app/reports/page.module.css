@@ -659,6 +659,35 @@
   gap: 0.4rem;
 }
 
+.headerDeleteButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.38rem;
+  min-height: 38px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fee2e2;
+  color: #991b1b;
+  padding: 0 0.7rem;
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.headerDeleteButton:hover:not(:disabled) {
+  border-color: #fca5a5;
+  background: #fecaca;
+  color: #7f1d1d;
+}
+
+.headerDeleteButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .closeButton {
   display: grid;
   place-items: center;
@@ -1157,10 +1186,23 @@
   color: #b91c1c;
 }
 
+.deleteButton {
+  border-color: #fecaca !important;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.deleteButton:hover:not(:disabled) {
+  border-color: #fca5a5 !important;
+  background: #fecaca;
+  color: #7f1d1d;
+}
+
 .search input:focus-visible,
 .filterControls select:focus-visible,
 .clearButton:focus-visible,
 .viewButton:focus-visible,
+.headerDeleteButton:focus-visible,
 .closeButton:focus-visible,
 .sendReplyButton:focus-visible,
 .actionButtons button:focus-visible {
@@ -1343,7 +1385,7 @@
   .actionButtons {
     display: grid;
     width: 100%;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .actionButtons button {
@@ -1883,7 +1925,7 @@
   .actionButtons {
     display: grid;
     width: 100%;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .actionButtons button {
@@ -2170,5 +2212,26 @@
 
   .toneButton {
     padding: 0 0.3rem;
+  }
+}
+
+
+/* Delete Report button: always visible in the report header. */
+@media (max-width: 640px) {
+  .headerDeleteButton {
+    min-height: 34px;
+    padding: 0 0.5rem;
+    font-size: 0.62rem;
+  }
+}
+
+@media (max-width: 430px) {
+  .headerDeleteButton span {
+    display: none;
+  }
+
+  .headerDeleteButton {
+    width: 34px;
+    padding: 0;
   }
 }

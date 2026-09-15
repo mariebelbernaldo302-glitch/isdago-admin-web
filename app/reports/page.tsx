@@ -25,6 +25,7 @@ import {
   ShieldCheck,
   Sparkles,
   UserRound,
+  Trash2,
   X,
   XCircle,
 } from "lucide-react";
@@ -34,6 +35,7 @@ import {
 } from "firebase/auth";
 
 import {
+  get,
   getDatabase,
   onValue,
   push,
@@ -584,16 +586,19 @@ function ReportDrawer({
   evidence,
   messages,
   saving,
+  deleting,
   sendingReply,
   feedback,
   onClose,
   onSave,
+  onDelete,
   onSendReply,
 }: {
   report: SafetyReport;
   evidence?: ReportEvidence;
   messages: ReportMessage[];
   saving: boolean;
+  deleting: boolean;
   sendingReply: boolean;
   feedback: string;
   onClose: () => void;
@@ -603,6 +608,7 @@ function ReportDrawer({
     resolution: string,
     publicOutcome: string
   ) => Promise<void>;
+  onDelete: () => Promise<void>;
   onSendReply: (
     message: string
   ) => Promise<boolean>;
@@ -691,6 +697,18 @@ function ReportDrawer({
     );
   }
 
+  function requestDelete() {
+    const confirmed = window.confirm(
+      `Delete case #${shortId(
+        report.id
+      )}? This permanently deletes this issue report and its private case data. This action cannot be undone.`
+    );
+
+    if (confirmed) {
+      void onDelete();
+    }
+  }
+
   return (
     <div
       className={styles.drawerBackdrop}
@@ -750,6 +768,17 @@ function ReportDrawer({
                 )}
               />
             </div>
+
+            <button
+              type="button"
+              className={styles.headerDeleteButton}
+              disabled={saving || deleting}
+              onClick={requestDelete}
+              aria-label={`Delete case ${shortId(report.id)}`}
+            >
+              <Trash2 size={16} />
+              <span>{deleting ? "Deleting..." : "Delete Report"}</span>
+            </button>
 
             <button
               type="button"
@@ -1243,7 +1272,19 @@ function ReportDrawer({
           <div className={styles.actionButtons}>
             <button
               type="button"
-              disabled={saving}
+              disabled={saving || deleting}
+              className={styles.deleteButton}
+              onClick={requestDelete}
+            >
+              <Trash2 size={17} />
+              {deleting
+                ? "Deleting..."
+                : "Delete report"}
+            </button>
+
+            <button
+              type="button"
+              disabled={saving || deleting}
               className={styles.reviewButton}
               onClick={() =>
                 onSave(
@@ -1260,9 +1301,9 @@ function ReportDrawer({
                 : "Start review"}
             </button>
 
-            <button 
+            <button
               type="button"
-              disabled={saving}
+              disabled={saving || deleting}
               className={styles.dismissButton}
               onClick={() =>
                 onSave(
@@ -1279,7 +1320,7 @@ function ReportDrawer({
 
             <button
               type="button"
-              disabled={saving}
+              disabled={saving || deleting}
               className={styles.resolveButton}
               onClick={() =>
                 onSave(
@@ -1325,6 +1366,9 @@ export default function ReportsPage() {
   ] = useState<ReportMessage[]>([]);
 
   const [saving, setSaving] =
+    useState(false);
+
+  const [deleting, setDeleting] =
     useState(false);
 
   const [
@@ -1854,6 +1898,123 @@ export default function ReportsPage() {
     }
   }
 
+  async function deleteReport() {
+    if (!selectedReport) {
+      return;
+    }
+
+    const reportToDelete = selectedReport;
+
+    setDeleting(true);
+    setFeedback("");
+
+    try {
+      const database = getDatabase();
+
+      // Delete the report's core case data first. This does not use
+      // orderByChild(), so a test database does not need .indexOn rules.
+      const coreUpdates: UnknownRecord = {
+        [`reports/${reportToDelete.id}`]: null,
+        [`report_messages/${reportToDelete.id}`]: null,
+        [`report_notification_events/${reportToDelete.id}`]: null,
+      };
+
+      evidenceRecords
+        .filter((item) =>
+          asString(
+            item.reportId,
+            item.id
+          ) === reportToDelete.id
+        )
+        .forEach((item) => {
+          coreUpdates[
+            `report_evidence/${item.id}`
+          ] = null;
+        });
+
+      await update(
+        ref(database),
+        coreUpdates
+      );
+
+      // Notification cleanup is best effort only. The report stays deleted
+      // even if test rules do not allow reading the notifications node.
+      try {
+        const notificationCleanup: UnknownRecord = {};
+        const notificationSnapshot = await get(
+          ref(database, "notifications")
+        );
+
+        notificationSnapshot.forEach((child) => {
+          const notification =
+            child.val() as UnknownRecord | null;
+
+          if (
+            asString(notification?.reportId) !==
+            reportToDelete.id
+          ) {
+            return;
+          }
+
+          const notificationId = child.key || "";
+
+          if (!notificationId) {
+            return;
+          }
+
+          notificationCleanup[
+            `notifications/${notificationId}`
+          ] = null;
+
+          const receiverId = asString(
+            notification?.receiverId
+          );
+
+          if (receiverId) {
+            notificationCleanup[
+              `user_notifications/${receiverId}/${notificationId}`
+            ] = null;
+          }
+        });
+
+        if (Object.keys(notificationCleanup).length > 0) {
+          await update(
+            ref(database),
+            notificationCleanup
+          );
+        }
+      } catch (notificationCleanupError) {
+        console.warn(
+          "Report deleted, but related notification cleanup was skipped:",
+          notificationCleanupError
+        );
+      }
+
+      setSelectedMessages([]);
+      setSelectedReport(null);
+      setFeedback("");
+
+      window.alert(
+        `Case #${shortId(
+          reportToDelete.id
+        )} was deleted successfully.`
+      );
+    } catch (error) {
+      console.error(
+        "Unable to delete report:",
+        error
+      );
+
+      setFeedback(
+        error instanceof Error
+          ? error.message
+          : "Unable to delete the report."
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function saveReview(
     status: ReportStatus,
     notes: string,
@@ -2209,6 +2370,7 @@ export default function ReportsPage() {
           )}
           messages={selectedMessages}
           saving={saving}
+          deleting={deleting}
           sendingReply={sendingReply}
           feedback={feedback}
           onClose={() => {
@@ -2216,6 +2378,7 @@ export default function ReportsPage() {
             setSelectedReport(null);
           }}
           onSave={saveReview}
+          onDelete={deleteReport}
           onSendReply={sendReply}
         />
       )}
