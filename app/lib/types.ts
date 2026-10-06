@@ -324,9 +324,21 @@ export type Order = {
   createdAt?: TimestampValue;
   updatedAt?: TimestampValue;
   acceptedAt?: TimestampValue;
+  preparingAt?: TimestampValue;
+  readyAt?: TimestampValue;
+  outForDeliveryAt?: TimestampValue;
+  deliveredAt?: TimestampValue;
   completedAt?: TimestampValue;
   cancelledAt?: TimestampValue;
   date?: string;
+  /** Per-vendor progress written by the mobile app under orders/{id}/vendorStatuses/{vendorId} */
+  vendorStatuses?: Record<
+    string,
+    {
+      status?: string;
+      updatedAt?: TimestampValue;
+    }
+  >;
 };
 
 export type Transaction = {

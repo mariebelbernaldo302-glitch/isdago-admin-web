@@ -119,12 +119,30 @@ const DEFAULT_VISIBLE_SECTIONS: Record<ReportSectionKey, boolean> = {
   coverage: true,
 };
 
-const SUCCESS_ORDER_STATUSES = new Set(["completed", "delivered"]);
-const CANCELLED_ORDER_STATUSES = new Set(["cancelled", "canceled", "failed"]);
+// Match mobile app final states + common variants after normalizeStatus()
+const SUCCESS_ORDER_STATUSES = new Set([
+  "completed",
+  "delivered",
+  "complete",
+  "order completed",
+  "successfully completed",
+  "successfully delivered",
+  "delivery completed",
+  "fulfilled",
+  "done",
+]);
+const CANCELLED_ORDER_STATUSES = new Set([
+  "cancelled",
+  "canceled",
+  "failed",
+  "declined",
+  "rejected",
+]);
 const IN_PROGRESS_ORDER_STATUSES = new Set([
   "accepted",
   "processing",
   "preparing",
+  "ready",
   "shipped",
   "for delivery",
   "out for delivery",
@@ -194,7 +212,18 @@ function isTimeWithinRange(time: number, range: DateRange) {
 }
 
 function orderTime(order: Order) {
-  return recordTime(order.completedAt, order.createdAt, order.updatedAt, order.date);
+  // Prefer completion/delivery timestamps so period filters align with when the sale finished.
+  return recordTime(
+    order.completedAt,
+    order.deliveredAt,
+    order.outForDeliveryAt,
+    order.readyAt,
+    order.preparingAt,
+    order.acceptedAt,
+    order.createdAt,
+    order.updatedAt,
+    order.date,
+  );
 }
 
 function applicationTime(application: VendorApplication) {
@@ -235,12 +264,47 @@ function orderAmount(order: Order) {
   );
 }
 
+/**
+ * Prefer per-vendor status written by the mobile app (vendorStatuses/{vendorId}/status)
+ * when present; fall back to top-level status. This matches VendorOrdersActivity resolution.
+ */
 function orderStatus(order: Order) {
-  return normalizeStatus(order.status || "pending");
+  const topLevel = normalizeStatus(order.status || "pending");
+  const vendorId = order.vendorId?.trim();
+  const vendorStatuses = order.vendorStatuses;
+
+  if (vendorStatuses && typeof vendorStatuses === "object") {
+    if (vendorId && vendorStatuses[vendorId]?.status) {
+      return normalizeStatus(vendorStatuses[vendorId].status);
+    }
+    // Any vendor progress that is further along than pending
+    for (const entry of Object.values(vendorStatuses)) {
+      const s = normalizeStatus(entry?.status);
+      if (s && s !== "pending" && s !== "unknown") {
+        return s;
+      }
+    }
+  }
+
+  return topLevel;
 }
 
 function isSuccessfulOrder(order: Order) {
-  return SUCCESS_ORDER_STATUSES.has(orderStatus(order));
+  const status = orderStatus(order);
+  if (SUCCESS_ORDER_STATUSES.has(status)) return true;
+
+  // Treat paid + non-cancelled as successful sale (covers edge cases where
+  // status lag behind paymentStatus after delivery/completion).
+  const payment = normalizeStatus(order.paymentStatus);
+  if (
+    (payment === "paid" || payment === "completed") &&
+    !CANCELLED_ORDER_STATUSES.has(status) &&
+    status !== "pending"
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isCancelledOrder(order: Order) {
@@ -356,11 +420,22 @@ function useFlattenedOrderItems() {
 
         if (root && typeof root === "object") {
           Object.entries(root).forEach(([orderId, rawItems]) => {
-            if (!rawItems || typeof rawItems !== "object" || Array.isArray(rawItems)) return;
+            if (!rawItems || typeof rawItems !== "object") return;
 
-            Object.entries(rawItems as Record<string, unknown>).forEach(([itemId, rawItem]) => {
+            // Support both map and array shapes under order_items/{orderId}
+            const entries = Array.isArray(rawItems)
+              ? rawItems.map((item, idx) => [String(idx), item] as const)
+              : Object.entries(rawItems as Record<string, unknown>);
+
+            entries.forEach(([itemId, rawItem]) => {
               if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) return;
-              rows.push({ ...(rawItem as OrderItem), id: itemId, orderId });
+              const item = rawItem as OrderItem;
+              rows.push({
+                ...item,
+                id: item.id || itemId,
+                orderId: (item as { orderId?: string }).orderId || orderId,
+                productId: item.productId || itemId,
+              });
             });
           });
         }
@@ -415,7 +490,9 @@ function ProductThumb({ src, alt }: { src: string | null; alt: string }) {
 export default function SystemReportsPage() {
   const now = useMemo(() => new Date(), []);
   const monthStart = useMemo(() => new Date(now.getFullYear(), now.getMonth(), 1), [now]);
-  const [preset, setPreset] = useState<DatePreset>("this-month");
+  // Default to all-time so fish-market sales/demand cards are not empty when
+  // completed orders fall outside the current calendar month.
+  const [preset, setPreset] = useState<DatePreset>("all");
   const [customStart, setCustomStart] = useState(toInputDate(monthStart));
   const [customEnd, setCustomEnd] = useState(toInputDate(now));
   const [salesView, setSalesView] = useState<SalesView>("daily");
@@ -563,9 +640,15 @@ export default function SystemReportsPage() {
       ),
     ).length;
 
-    const successfulOrderIds = new Set(
-      completedOrders.map((order) => order.orderId || order.id).filter(Boolean),
-    );
+    // Collect every possible order key so order_items/{key} and embedded items match
+    // whether the RTDB key or the orderId field is used.
+    const successfulOrderIds = new Set<string>();
+    completedOrders.forEach((order) => {
+      const a = order.orderId?.trim();
+      const b = order.id?.trim();
+      if (a) successfulOrderIds.add(a);
+      if (b) successfulOrderIds.add(b);
+    });
 
     const vendorOrderCounts = new Map<string, number>();
     const vendorCancelledCounts = new Map<string, number>();
@@ -601,17 +684,30 @@ export default function SystemReportsPage() {
 
     // Flatten items from order_items path + embedded order.items
     const allSuccessfulItems: Array<FlattenedOrderItem & { vendorId?: string; time: number }> = [];
+    const seenItemKeys = new Set<string>();
+
+    const orderMatchesId = (order: Order, id: string) => {
+      const a = order.orderId?.trim();
+      const b = order.id?.trim();
+      return (a && a === id) || (b && b === id);
+    };
+
     orderItems.forEach((item) => {
-      if (!successfulOrderIds.has(item.orderId)) return;
-      const parent = completedOrders.find((o) => (o.orderId || o.id) === item.orderId);
+      const oid = (item.orderId || "").trim();
+      if (!oid || !successfulOrderIds.has(oid)) return;
+      const parent = completedOrders.find((o) => orderMatchesId(o, oid));
+      const dedupeKey = `${oid}:${item.id || item.productId || item.productName || ""}`;
+      if (seenItemKeys.has(dedupeKey)) return;
+      seenItemKeys.add(dedupeKey);
       allSuccessfulItems.push({
         ...item,
+        orderId: oid,
         vendorId: item.vendorId || parent?.vendorId,
         time: parent ? orderTime(parent) : 0,
       });
     });
     completedOrders.forEach((order) => {
-      const oid = order.orderId || order.id;
+      const oid = (order.orderId || order.id || "").trim();
       if (!oid || !order.items) return;
       const items = Array.isArray(order.items)
         ? order.items
@@ -619,9 +715,13 @@ export default function SystemReportsPage() {
       items.forEach((raw, idx) => {
         if (!raw || typeof raw !== "object") return;
         const item = raw as OrderItem;
+        const itemId = item.id || `embedded-${oid}-${idx}`;
+        const dedupeKey = `${oid}:${itemId}`;
+        if (seenItemKeys.has(dedupeKey)) return;
+        seenItemKeys.add(dedupeKey);
         allSuccessfulItems.push({
           ...item,
-          id: item.id || `embedded-${oid}-${idx}`,
+          id: itemId,
           orderId: oid,
           vendorId: item.vendorId || order.vendorId,
           time: orderTime(order),
