@@ -243,7 +243,7 @@ export default function LoginPage() {
               id="admin-email"
               className="input"
               type="email"
-              placeholder="admin@isdago.com"
+              placeholder="admin email"
               value={email}
               onChange={(event) =>
                 setEmail(event.target.value)

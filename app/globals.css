@@ -3946,6 +3946,11 @@ td {
    Global selectors belong here, not in page.module.css.
    ========================= */
 
+@page {
+  size: A4;
+  margin: 14mm 12mm 16mm 12mm;
+}
+
 @media print {
   html,
   body {
