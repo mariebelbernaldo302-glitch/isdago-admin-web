@@ -70,6 +70,12 @@ type FlattenedOrderItem = OrderItem & {
   orderId: string;
 };
 
+type HighestSoldItem = {
+  name: string;
+  price: number;
+  vendorId?: string;
+};
+
 type DateRange = {
   start: number | null;
   end: number | null;
@@ -735,10 +741,10 @@ export default function SystemReportsPage() {
       .slice(0, 15);
 
     // Highest sold unit price from order items
-    let highestSold: { name: string; price: number; vendorId?: string } | null = null;
-    allSuccessfulItems.forEach((item) => {
+    let highestSold: HighestSoldItem | null = null;
+    for (const item of allSuccessfulItems) {
       const price = toNumber(item.price, 0);
-      if (price <= 0) return;
+      if (price <= 0) continue;
       if (!highestSold || price > highestSold.price) {
         highestSold = {
           name: getOrderItemName(item),
@@ -746,7 +752,7 @@ export default function SystemReportsPage() {
           vendorId: item.vendorId,
         };
       }
-    });
+    }
 
     const barangayMap = new Map<string, number>();
     approvedVendors.forEach((vendor) => {
@@ -1005,7 +1011,7 @@ export default function SystemReportsPage() {
       priceRows,
       listingRows,
       mostExpensiveListings,
-      highestSold,
+      highestSold: highestSold as HighestSoldItem | null,
       barangayRows,
       assistanceRows,
       vendorSalesRows,
@@ -1036,6 +1042,10 @@ export default function SystemReportsPage() {
     casesQuery.error ||
     activityQuery.error ||
     orderItemsQuery.error;
+
+  // Explicit local — bypasses useMemo inference that can collapse highestSold to `never`.
+  const highestSoldItem: HighestSoldItem | null =
+    (report as { highestSold?: HighestSoldItem | null }).highestSold ?? null;
 
   const completionRate = percent(report.completedOrders.length, report.periodOrders.length);
   const vendorParticipationRate = percent(
@@ -1645,15 +1655,15 @@ export default function SystemReportsPage() {
                     <span className={styles.highlightLabel}>
                       <Package size={16} /> Highest sold unit price
                     </span>
-                    {report.highestSold ? (
+                    {highestSoldItem ? (
                       <div className={styles.highlightBody}>
                         <div className={styles.thumbPlaceholder}>
                           <Fish size={18} />
                         </div>
                         <div>
-                          <strong>{report.highestSold.name}</strong>
+                          <strong>{highestSoldItem.name}</strong>
                           <p>
-                            {formatMoney(report.highestSold.price, {
+                            {formatMoney(highestSoldItem.price, {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
                             })}{" "}
