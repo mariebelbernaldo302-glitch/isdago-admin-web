@@ -2,11 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  limitToFirst,
+  limitToLast,
   onValue,
   orderByChild,
   query as realtimeQuery,
   ref,
   type DataSnapshot,
+  type QueryConstraint,
 } from "firebase/database";
 
 import { db } from "./firebase";
@@ -194,9 +197,23 @@ export function useRealtimeCollection<T extends { id: string }>(
 
     const collectionRef = ref(db, normalizedPath);
 
-    const databaseQuery = orderedBy
-      ? realtimeQuery(collectionRef, orderByChild(orderedBy))
-      : collectionRef;
+    // Apply limit at the Firebase query level so we do not download the whole node.
+    const constraints: QueryConstraint[] = [];
+    if (orderedBy) {
+      constraints.push(orderByChild(orderedBy));
+    }
+    if (typeof limit === "number" && limit > 0) {
+      if (sortDirection === "desc") {
+        constraints.push(limitToLast(limit));
+      } else {
+        constraints.push(limitToFirst(limit));
+      }
+    }
+
+    const databaseQuery =
+      constraints.length > 0
+        ? realtimeQuery(collectionRef, ...constraints)
+        : collectionRef;
 
     const unsubscribe = onValue(
       databaseQuery,
@@ -209,13 +226,10 @@ export function useRealtimeCollection<T extends { id: string }>(
         }
 
         const rows = snapshotToArray<T>(snapshot);
+        // limitToLast returns ascending order — re-sort for UI
         const sortedRows = sortRows(rows, orderedBy, sortDirection);
-        const limitedRows =
-          typeof limit === "number" && limit > 0
-            ? sortedRows.slice(0, limit)
-            : sortedRows;
 
-        setData(limitedRows);
+        setData(sortedRows);
         setLoading(false);
         setError("");
       },

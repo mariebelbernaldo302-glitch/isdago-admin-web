@@ -27,16 +27,19 @@ import {
   BarChart3,
   LayoutDashboard,
   LogOut,
+  MessageCircle,
   Search,
   Settings,
   ShieldAlert,
   ShieldCheck,
   Store,
   Users,
+  Wallet,
 } from "lucide-react";
 
 import AdminGuard from "./AdminGuard";
 import IsdaGoLogo from "./IsdaGoLogo";
+import MessagesNavBadge from "./MessagesNavBadge";
 
 import {
   auth,
@@ -51,7 +54,12 @@ type NavigationItem = {
   label: string;
   icon: LucideIcon;
   keywords: string[];
-  group: "Overview" | "Account Monitoring" | "Trust & Safety" | "Administration";
+  group:
+    | "Overview"
+    | "Account Monitoring"
+    | "Communication"
+    | "Trust & Safety"
+    | "Administration";
 };
 
 type DashboardShellProps = {
@@ -90,6 +98,21 @@ const navigationItems: NavigationItem[] = [
     ],
   },
   {
+    href: "/vendor-sales",
+    label: "Vendor Sales Monitor",
+    icon: Wallet,
+    group: "Overview",
+    keywords: [
+      "vendor sales",
+      "vendor income",
+      "fish prices",
+      "price monitor",
+      "livelihood support",
+      "help vendors",
+      "sales monitor",
+    ],
+  },
+  {
     href: "/customers",
     label: "Customers",
     icon: Users,
@@ -123,6 +146,20 @@ const navigationItems: NavigationItem[] = [
       "approval",
       "applications",
       "pending vendors",
+    ],
+  },
+  {
+    href: "/messages",
+    label: "Messages",
+    icon: MessageCircle,
+    group: "Communication",
+    keywords: [
+      "messages",
+      "chat",
+      "inbox",
+      "vendor messages",
+      "price notice reply",
+      "messenger",
     ],
   },
   {
@@ -399,6 +436,10 @@ export function DashboardShell({
                       <span>
                         {item.label}
                       </span>
+
+                      {item.href === "/messages" && (
+                        <MessagesNavBadge />
+                      )}
                     </Link>
                   </Fragment>
                 );
