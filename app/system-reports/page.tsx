@@ -17,6 +17,7 @@ import {
   Printer,
   ShoppingBag,
   Store,
+  Trash2,
   TrendingDown,
   TrendingUp,
   Users,
@@ -24,6 +25,8 @@ import {
 import { onValue, ref } from "firebase/database";
 
 import { DashboardShell } from "../components/DashboardShell";
+import { createActivityLog } from "../lib/activity";
+import { deleteProductCascade } from "../lib/database";
 import { db } from "../lib/firebase";
 import {
   formatDate,
@@ -434,7 +437,9 @@ function useFlattenedOrderItems() {
                 ...item,
                 id: item.id || itemId,
                 orderId: (item as { orderId?: string }).orderId || orderId,
-                productId: item.productId || itemId,
+                // Keep real productId only — never fall back to the RTDB item key
+                // (that would falsely treat order-item keys as product ids).
+                productId: item.productId || undefined,
               });
             });
           });
@@ -499,6 +504,8 @@ export default function SystemReportsPage() {
   const [vendorSearch, setVendorSearch] = useState("");
   const [visibleSections, setVisibleSections] =
     useState<Record<ReportSectionKey, boolean>>(DEFAULT_VISIBLE_SECTIONS);
+  const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
+  const [deleteMessage, setDeleteMessage] = useState("");
 
   const toggleSection = (key: ReportSectionKey) => {
     setVisibleSections((prev) => {
@@ -729,19 +736,48 @@ export default function SystemReportsPage() {
       });
     });
 
+    // Live product keys — demand / best-seller cards only show products that
+    // still exist in the catalog (deleted listings are hidden from these ranks).
+    const liveProductIds = new Set(
+      products.map((p) => (p.id || "").trim().toLowerCase()).filter(Boolean),
+    );
+    const liveProductNames = new Set(
+      products.map((p) => getProductDisplayName(p).trim().toLowerCase()).filter(Boolean),
+    );
+    const isLiveProduct = (productId: string | undefined, name: string) => {
+      const id = (productId || "").trim().toLowerCase();
+      const nm = name.trim().toLowerCase();
+      // Prefer id match; only fall back to name when no productId was stored.
+      if (id) return liveProductIds.has(id);
+      if (nm) return liveProductNames.has(nm);
+      return false;
+    };
+
     // Demand / best seller
     const demandMap = new Map<
       string,
-      { name: string; quantity: number; revenue: number; orders: Set<string>; image: string | null }
+      {
+        name: string;
+        productId: string;
+        quantity: number;
+        revenue: number;
+        orders: Set<string>;
+        image: string | null;
+      }
     >();
     allSuccessfulItems.forEach((item) => {
-      const key = (item.productId || getOrderItemName(item)).trim().toLowerCase();
+      const name = getOrderItemName(item);
+      const productId = (item.productId || "").trim();
+      // Skip items whose product was deleted from the catalog
+      if (!isLiveProduct(productId, name)) return;
+      const key = (productId || name).trim().toLowerCase();
       if (!key) return;
       const qty = Math.max(0, toNumber(item.quantity, 0));
       const price = toNumber(item.price, 0);
       const sub = toNumber(item.subtotal, qty * price);
       const current = demandMap.get(key) || {
-        name: getOrderItemName(item),
+        name,
+        productId,
         quantity: 0,
         revenue: 0,
         orders: new Set<string>(),
@@ -840,14 +876,16 @@ export default function SystemReportsPage() {
       .sort((a, b) => b.listings - a.listings || a.name.localeCompare(b.name))
       .slice(0, 15);
 
-    // Highest sold unit price from order items
+    // Highest sold unit price from order items (live products only)
     let highestSold: HighestSoldItem | null = null;
     for (const item of allSuccessfulItems) {
+      const name = getOrderItemName(item);
+      if (!isLiveProduct(item.productId, name)) continue;
       const price = toNumber(item.price, 0);
       if (price <= 0) continue;
       if (!highestSold || price > highestSold.price) {
         highestSold = {
-          name: getOrderItemName(item),
+          name,
           price,
           vendorId: item.vendorId,
         };
@@ -1142,6 +1180,61 @@ export default function SystemReportsPage() {
     casesQuery.error ||
     activityQuery.error ||
     orderItemsQuery.error;
+
+  async function handleDeleteProduct(row: {
+    id: string;
+    name: string;
+    vendorId: string;
+    vendorName: string;
+  }) {
+    if (!row.id) return;
+    const confirmed = window.confirm(
+      `Delete product "${row.name}" from ${row.vendorName}?\n\nThis removes the listing and clears related cart / compliance links so it will no longer appear for customers or vendors. Order history is kept.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingProductId(row.id);
+    setDeleteMessage("");
+    try {
+      const result = await deleteProductCascade(row.id);
+      try {
+        await createActivityLog({
+          type: "product_deleted",
+          action: "delete",
+          module: "system-reports",
+          description: `Deleted product "${row.name}" (vendor: ${row.vendorName}). Cart items removed: ${result.cartItemsRemoved}. Compliance cases closed: ${result.complianceCasesClosed}.`,
+          entityType: "product",
+          entityId: row.id,
+          severity: "warning",
+          metadata: {
+            productName: row.name,
+            vendorId: row.vendorId,
+            vendorName: row.vendorName,
+            cartItemsRemoved: result.cartItemsRemoved,
+            complianceCasesClosed: result.complianceCasesClosed,
+          },
+        });
+      } catch {
+        // Activity log failure should not block the delete result.
+      }
+      const extras: string[] = [];
+      if (result.cartItemsRemoved > 0) {
+        extras.push(`${result.cartItemsRemoved} cart item(s) cleared`);
+      }
+      if (result.complianceCasesClosed > 0) {
+        extras.push(`${result.complianceCasesClosed} compliance case(s) closed`);
+      }
+      setDeleteMessage(
+        extras.length > 0
+          ? `Deleted "${row.name}" — ${extras.join(", ")}.`
+          : `Deleted "${row.name}". It will no longer appear in live listings.`,
+      );
+    } catch (e) {
+      setDeleteMessage(e instanceof Error ? e.message : "Failed to delete product.");
+    } finally {
+      setDeletingProductId(null);
+    }
+  }
 
   // Explicit local — bypasses useMemo inference that can collapse highestSold to `never`.
   const highestSoldItem: HighestSoldItem | null =
@@ -1727,7 +1820,7 @@ export default function SystemReportsPage() {
                   </article>
                   <article className={styles.highlightCard}>
                     <span className={styles.highlightLabel}>
-                      <TrendingDown size={16} /> Pinaka mahal (listed)
+                      <TrendingDown size={16} /> Most Expensive (listed)
                     </span>
                     {report.mostExpensiveListings[0] ? (
                       <div className={styles.highlightBody}>
@@ -1800,7 +1893,10 @@ export default function SystemReportsPage() {
                   <div className={styles.tableBlock}>
                     <div className={styles.tableTitle}>
                       <h3>Most demanded fish (period)</h3>
-                      <p>Quantity from completed/delivered orders.</p>
+                      <p>
+                        Quantity from completed/delivered orders for products still in the catalog.
+                        Deleted listings are excluded.
+                      </p>
                     </div>
                     <div className={styles.demandList}>
                       {report.demandRows.length === 0 ? (
@@ -1905,9 +2001,15 @@ export default function SystemReportsPage() {
                     <h3>Vendor listings with photo &amp; actual price</h3>
                     <p>
                       Current product cards: image, fish name, vendor, actual price, stock. Sorted
-                      by highest price first (pinaka mahal at top).
+                      by highest price first (pinaka mahal at top). Use Delete to permanently remove
+                      a listing.
                     </p>
                   </div>
+                  {deleteMessage ? (
+                    <p className={styles.deleteMessage} role="status">
+                      {deleteMessage}
+                    </p>
+                  ) : null}
                   <div className={styles.tableWrap}>
                     <table className={styles.reportTable}>
                       <thead>
@@ -1923,7 +2025,7 @@ export default function SystemReportsPage() {
                       <tbody>
                         {report.listingRows.length === 0 ? (
                           <tr>
-                            <td colSpan={6} className={styles.emptyCell}>
+                            <td colSpan={7} className={styles.emptyCell}>
                               No product listings with prices.
                             </td>
                           </tr>
@@ -1950,6 +2052,9 @@ export default function SystemReportsPage() {
                               <td>{formatNumber(row.stock)}</td>
                               <td>
                                 <span className={styles.statusPill}>{row.status}</span>
+                              </td>
+                              <td>
+                                
                               </td>
                             </tr>
                           ))

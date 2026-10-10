@@ -176,19 +176,73 @@ export async function issuePriceNotice(input: {
     updatedAt: now,
   };
 
-  await update(ref(database), {
-    [`price_compliance/${caseId}`]: complianceCase,
-    [`products/${productId}/priceComplianceCaseId`]: caseId,
-    [`products/${productId}/priceComplianceStatus`]: "pending",
-    [`products/${productId}/priceComplianceDeadlineAt`]: deadlineAt,
-    [`products/${productId}/updatedAt`]: now,
-  });
+  // Try to load product image for the automatic message card
+  let productImageUrl = "";
+  try {
+    const productSnap = await get(ref(database, `products/${productId}`));
+    if (productSnap.exists()) {
+      const p = productSnap.val() as Record<string, unknown>;
+      const raw =
+        (typeof p.imageUrl === "string" && p.imageUrl) ||
+        (typeof p.image === "string" && p.image) ||
+        (typeof p.photoUrl === "string" && p.photoUrl) ||
+        "";
+      productImageUrl = String(raw).trim();
+    }
+  } catch {
+    // non-fatal – message still works without image
+  }
 
   const deadlineText = new Date(deadlineAt).toLocaleString("en-PH", {
     dateStyle: "medium",
     timeStyle: "short",
   });
 
+  // Build a clear automatic message from Admin → Vendor
+  const autoMessageText =
+    `⚠️ Price Notice – ${productName}\n\n` +
+    `Your current price: ₱${vendorPrice.toLocaleString("en-PH")} / ${unit}\n` +
+    `Minimum / market price: ₱${marketPrice.toLocaleString("en-PH")} / ${unit}\n` +
+    `Difference: +₱${(vendorPrice - marketPrice).toLocaleString("en-PH")}\n\n` +
+    `Please adjust the price to ₱${marketPrice.toLocaleString("en-PH")} or below within 24 hours (by ${deadlineText}).\n` +
+    `If the price is not lowered in time, this product will be disabled automatically.\n\n` +
+    `You can reply to this message if you need clarification or have a valid reason.`;
+
+  // Create the automatic admin message in the chat thread
+  const msgId = push(ref(database, "price_compliance_messages")).key;
+  if (!msgId) throw new Error("Unable to create automatic message id.");
+
+  const autoMessage: ComplianceMessage = {
+    id: msgId,
+    caseId,
+    productId,
+    productName,
+    vendorId,
+    vendorName,
+    message: autoMessageText,
+    senderRole: "admin",
+    createdAt: now,
+    status: "sent",
+    productImageUrl: productImageUrl || undefined,
+    marketPrice,
+    vendorPriceAtNotice: vendorPrice,
+    unit,
+    deadlineAt,
+    isAutomaticNotice: true,
+  };
+
+  await update(ref(database), {
+    [`price_compliance/${caseId}`]: complianceCase,
+    [`products/${productId}/priceComplianceCaseId`]: caseId,
+    [`products/${productId}/priceComplianceStatus`]: "pending",
+    [`products/${productId}/priceComplianceDeadlineAt`]: deadlineAt,
+    [`products/${productId}/updatedAt`]: now,
+    // Automatic chat message so it appears in Admin Messages + vendor can reply
+    [`price_compliance_messages/${msgId}`]: autoMessage,
+    [`price_compliance/${caseId}/lastVendorMessageAt`]: now,
+  });
+
+  // Still send push notification so vendor is alerted immediately
   await sendNotifications(
     [
       {
@@ -200,11 +254,8 @@ export async function issuePriceNotice(input: {
     {
       title: `Price notice: ${productName}`,
       message:
-        `Your listing "${productName}" is priced at ₱${vendorPrice.toLocaleString("en-PH")} / ${unit}, ` +
-        `which is above the reference market price of ₱${marketPrice.toLocaleString("en-PH")} / ${unit}. ` +
-        `Please adjust to ₱${marketPrice.toLocaleString("en-PH")} or below within 24 hours (by ${deadlineText}). ` +
-        `If not complied, this product will be disabled automatically. ` +
-        `You may message the admin if you need clarification.`,
+        `Your listing "${productName}" is priced above the market price of ₱${marketPrice.toLocaleString("en-PH")} / ${unit}. ` +
+        `Please adjust within 24 hours. Open the message to reply to admin.`,
       type: "price_compliance",
       category: "price",
       severity: "warning",
@@ -413,6 +464,13 @@ export type ComplianceMessage = {
   senderRole: "vendor" | "admin";
   createdAt: number;
   status?: string;
+  /** Optional rich fields for automatic price notices */
+  productImageUrl?: string;
+  marketPrice?: number;
+  vendorPriceAtNotice?: number;
+  unit?: string;
+  deadlineAt?: number;
+  isAutomaticNotice?: boolean;
 };
 
 /**

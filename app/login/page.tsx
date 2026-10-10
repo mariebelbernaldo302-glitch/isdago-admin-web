@@ -13,10 +13,14 @@ import {
   LogIn,
   Mail,
   ShieldCheck,
+  Store,
+  Fish,
+  BarChart3,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import IsdaGoLogo from "../components/IsdaGoLogo";
+import styles from "./login.module.css";
 import { createActivityLog } from "../lib/activity";
 import {
   auth,
@@ -207,63 +211,114 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="login-page">
-      <form className="login-card" onSubmit={handleLogin}>
-        <IsdaGoLogo />
+    <main className={styles.page}>
+      <aside
+        className={styles.hero}
+        style={{
+          backgroundImage:
+            "linear-gradient(160deg, rgba(6,38,51,0.88), rgba(11,61,79,0.72) 55%, rgba(26,107,60,0.8)), url(/images/catbalogan-port.jpg)",
+        }}
+      >
+        <div className={styles.brandText}>
+          <strong>IsdaGo</strong>
+          <span>Seafood marketplace · Catbalogan City</span>
+        </div>
 
-        <h1>IsdaGo Admin</h1>
-
-        <p>
-          Sign in to manage the seafood marketplace, vendors,
-          products, orders, and transactions.
+        <div className={styles.accentBar} />
+        <div className={styles.eyebrow}>ADMINISTRATION PORTAL</div>
+        <h2>Fresh from the Catbalogan port, managed in one place.</h2>
+        <p className={styles.lead}>
+          Manage the seafood marketplace, vendors, products, orders,
+          and transactions of the City Economic Enterprise &amp;
+          Public Utility Office.
         </p>
 
-        {sessionNotice && (
-          <div className="notice" role="status">
-            <strong>Session ended</strong>
-            <div>{sessionNotice}</div>
+        <div className={styles.features}>
+          <div className={styles.feature}>
+            <span className={styles.featureIcon}>
+              <Store size={18} />
+            </span>
+            <div>
+              <b>Vendor &amp; Approval Management</b>
+              <span>Review and monitor registered fish vendors</span>
+            </div>
           </div>
-        )}
-
-        {error && (
-          <div className="error-box" role="alert">
-            <strong>Login failed</strong>
-            <p>{error}</p>
+          <div className={styles.feature}>
+            <span className={styles.featureIcon}>
+              <Fish size={18} />
+            </span>
+            <div>
+              <b>Products &amp; Orders</b>
+              <span>
+                Track listings, price compliance and deliveries
+              </span>
+            </div>
           </div>
-        )}
+          <div className={styles.feature}>
+            <span className={styles.featureIcon}>
+              <BarChart3 size={18} />
+            </span>
+            <div>
+              <b>Transactions &amp; Reports</b>
+              <span>Sales, activity logs and system reports</span>
+            </div>
+          </div>
+        </div>
+      </aside>
 
-        <div className="form-grid">
-          <div className="form-group">
+      <section className={styles.formSide}>
+        <form className={styles.card} onSubmit={handleLogin}>
+          <div className={styles.logoWrap}>
+            <IsdaGoLogo />
+          </div>
+
+          <div className={styles.tag}>AUTHORIZED PERSONNEL ONLY</div>
+          <h1>Sign in to IsdaGo Admin</h1>
+          <p className={styles.sub}>
+            Enter your administrator credentials to continue.
+          </p>
+
+          {sessionNotice && (
+            <div className={styles.notice} role="status">
+              <strong>Session ended</strong>
+              <div>{sessionNotice}</div>
+            </div>
+          )}
+
+          {error && (
+            <div className={styles.errorBox} role="alert">
+              <strong>Login failed</strong>
+              <p>{error}</p>
+            </div>
+          )}
+
+          <div className={styles.group}>
             <label htmlFor="admin-email">
               <Mail size={16} strokeWidth={2.4} />
               Email Address
             </label>
-
             <input
               id="admin-email"
-              className="input"
+              className={styles.input}
               type="email"
-              placeholder="Enter Your Email Address"
+              placeholder="admin@isdago.com"
               value={email}
-              onChange={(event) =>
-                setEmail(event.target.value)
-              }
+              onChange={(event) => setEmail(event.target.value)}
               autoComplete="email"
               disabled={loading}
               required
             />
           </div>
 
-          <div className="form-group">
+          <div className={styles.group}>
             <label htmlFor="admin-password">
               <Lock size={16} strokeWidth={2.4} />
               Password
             </label>
-
-            <div className="password-field">
+            <div className={styles.passwordField}>
               <input
                 id="admin-password"
-                className="input"
+                className={styles.input}
                 type={showPassword ? "text" : "password"}
                 placeholder="Enter your password"
                 value={password}
@@ -274,19 +329,14 @@ export default function LoginPage() {
                 disabled={loading}
                 required
               />
-
               <button
                 type="button"
-                className="password-toggle"
+                className={styles.toggle}
                 onClick={() =>
-                  setShowPassword(
-                    (currentValue) => !currentValue
-                  )
+                  setShowPassword((currentValue) => !currentValue)
                 }
                 aria-label={
-                  showPassword
-                    ? "Hide password"
-                    : "Show password"
+                  showPassword ? "Hide password" : "Show password"
                 }
                 disabled={loading}
               >
@@ -298,23 +348,22 @@ export default function LoginPage() {
               </button>
             </div>
           </div>
-        </div>
 
-        <button
-          type="submit"
-          className="btn btn-primary"
-          disabled={!canSubmit}
-        >
-          <LogIn size={18} strokeWidth={2.4} />
-          {loading ? "Verifying admin access..." : "Sign In"}
-        </button>
+          <button
+            type="submit"
+            className={styles.submit}
+            disabled={!canSubmit}
+          >
+            <LogIn size={18} strokeWidth={2.4} />
+            {loading ? "Verifying admin access..." : "Sign In"}
+          </button>
 
-        <div className="notice">
-          <ShieldCheck size={16} strokeWidth={2.4} />
-          Only Firebase accounts listed in the server-side
-          administrator allowlist may access this dashboard.
-        </div>
-      </form>
+          <div className={styles.foot}>
+            City Economic Enterprise &amp; Public Utility Office ·
+            Catbalogan City
+          </div>
+        </form>
+      </section>
     </main>
   );
 }
